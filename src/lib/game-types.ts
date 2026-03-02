@@ -25,12 +25,14 @@ export interface Player {
 export interface RoundAnswers {
   name: string;
   place: string;
+  animal: string;
   thing: string;
 }
 
 export interface ValidationResults {
   name: { isValid: boolean; reason: string };
   place: { isValid: boolean; reason: string };
+  animal: { isValid: boolean; reason: string };
   thing: { isValid: boolean; reason: string };
 }
 

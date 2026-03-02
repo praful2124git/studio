@@ -36,6 +36,7 @@ export default function Home() {
   const [localAnswers, setLocalAnswers] = useState<RoundAnswers>({
     name: '',
     place: '',
+    animal: '',
     thing: '',
   });
 
@@ -77,11 +78,9 @@ export default function Home() {
       setGameState(prev => ({ ...prev, players: [me] }));
       setStatus('LOBBY');
     } else if (mode === 'HOST') {
-      // Host waits for peer ID in useMultiplayer then updates me.id
       setGameState(prev => ({ ...prev, players: [{ ...me, id: peerId }] }));
       setStatus('LOBBY');
     } else {
-      // Guest connects to host
       connectToHost(roomCode);
       setStatus('LOBBY');
     }
@@ -213,21 +212,28 @@ export default function Home() {
 
     for (let i = 0; i < updatedPlayers.length; i++) {
       const p = updatedPlayers[i];
-      const ans = p.answers || { name: '', place: '', thing: '' };
+      const ans = p.answers || { name: '', place: '', animal: '', thing: '' };
       
       try {
         const result = await validateAnswers({
           targetLetter: letter,
           name: ans.name,
           place: ans.place,
+          animal: ans.animal,
           thing: ans.thing
         });
-        updatedPlayers[i].validation = result;
+        updatedPlayers[i].validation = {
+          name: result.nameValidation,
+          place: result.placeValidation,
+          animal: result.animalValidation,
+          thing: result.thingValidation,
+        };
       } catch (e) {
         // Local heuristic fallback
         updatedPlayers[i].validation = {
           name: { isValid: ans.name.toLowerCase().startsWith(letter.toLowerCase()) && ans.name.length > 1, reason: "Fallback validation" },
           place: { isValid: ans.place.toLowerCase().startsWith(letter.toLowerCase()) && ans.place.length > 1, reason: "Fallback validation" },
+          animal: { isValid: ans.animal.toLowerCase().startsWith(letter.toLowerCase()) && ans.animal.length > 1, reason: "Fallback validation" },
           thing: { isValid: ans.thing.toLowerCase().startsWith(letter.toLowerCase()) && ans.thing.length > 1, reason: "Fallback validation" },
         };
       }
@@ -236,7 +242,7 @@ export default function Home() {
     // Scoring logic
     updatedPlayers.forEach((p, idx) => {
       let roundScore = 0;
-      const cats: (keyof RoundAnswers)[] = ['name', 'place', 'thing'];
+      const cats: (keyof RoundAnswers)[] = ['name', 'place', 'animal', 'thing'];
       cats.forEach(cat => {
         const val = p.validation?.[cat];
         if (val?.isValid) {
@@ -263,12 +269,10 @@ export default function Home() {
     if (status === 'VALIDATING' && (mode === 'HOST' || mode === 'SINGLE')) {
       const allReady = gameState.players.every(p => !!p.answers);
       if (allReady) {
-        if (gameState.validationMode === 'AI') {
-          runAIValidation();
-        }
+        runAIValidation();
       }
     }
-  }, [status, gameState.players, mode, gameState.validationMode]);
+  }, [status, gameState.players, mode]);
 
   return (
     <div className="min-h-screen p-4 flex flex-col items-center justify-center font-body text-foreground">
@@ -281,7 +285,7 @@ export default function Home() {
               </div>
             </div>
             <CardTitle className="text-4xl font-bold tracking-tight text-primary">LetterLink Live</CardTitle>
-            <CardDescription className="text-lg">Name, Place, Thing - Reinvented</CardDescription>
+            <CardDescription className="text-lg">Name, Place, Animal, Thing - Reinvented</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <Button className="w-full h-14 text-xl font-semibold gap-3 bg-primary hover:bg-primary/90 rounded-2xl" onClick={() => startNewGame('SINGLE')}>
@@ -394,7 +398,7 @@ export default function Home() {
           </div>
 
           <div className="grid gap-6">
-            {['Name', 'Place', 'Thing'].map(cat => (
+            {['Name', 'Place', 'Animal', 'Thing'].map(cat => (
               <div key={cat} className="space-y-2">
                 <label className="text-lg font-semibold ml-2">{cat}</label>
                 <Input 
@@ -451,8 +455,8 @@ export default function Home() {
                       <Badge className="text-xl py-1 px-4 bg-accent text-white">+{p.lastRoundScore} pts</Badge>
                     </div>
 
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                      {(['name', 'place', 'thing'] as (keyof RoundAnswers)[]).map(cat => {
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+                      {(['name', 'place', 'animal', 'thing'] as (keyof RoundAnswers)[]).map(cat => {
                         const val = p.validation?.[cat];
                         return (
                           <div key={cat} className={`p-3 rounded-xl border-2 flex flex-col ${val?.isValid ? 'border-green-500/20 bg-green-500/5' : 'border-destructive/20 bg-destructive/5'}`}>
@@ -474,7 +478,7 @@ export default function Home() {
 
           {(mode === 'HOST' || mode === 'SINGLE') && (
             <Button className="w-full h-14 text-xl font-bold bg-primary rounded-2xl shadow-xl" onClick={() => {
-              setLocalAnswers({ name: '', place: '', thing: '' });
+              setLocalAnswers({ name: '', place: '', animal: '', thing: '' });
               setGameTimer(60);
               initiateRound();
             }}>
