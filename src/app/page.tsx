@@ -7,7 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
-import { Users, User, Play, LogIn, Trophy, Timer as TimerIcon, Hash, CheckCircle2, XCircle, ArrowRight, Settings, LogOut, ShieldCheck, ShieldAlert } from 'lucide-react';
+import { Users, User, Play, LogIn, Trophy, Timer as TimerIcon, Hash, CheckCircle2, XCircle, ArrowRight, Settings, LogOut, ShieldCheck, ShieldAlert, Rocket } from 'lucide-react';
 import { GameStatus, Player, GameMode, GameState, RoundAnswers } from '@/lib/game-types';
 import { validateAnswers } from '@/ai/flows/ai-answer-validation-flow';
 import { useUser, useFirestore, useDoc, useMemoFirebase, setDocumentNonBlocking, updateDocumentNonBlocking, initiateAnonymousSignIn } from '@/firebase';
@@ -62,13 +62,17 @@ export default function Home() {
 
   // Handle room joining and game status synchronization
   useEffect(() => {
-    if (gameSession) {
-      if (status !== 'MENU' && status !== 'PROFILE') {
-        if (gameSession.status !== status) {
-          setStatus(gameSession.status);
-          if (gameSession.status === 'PLAYING') {
-             setGameTimer(60);
-          }
+    if (gameSession && status !== 'MENU' && status !== 'PROFILE') {
+      if (gameSession.status !== status) {
+        setStatus(gameSession.status);
+        
+        // Trigger AI validation automatically for everyone when session enters VALIDATING status
+        if (gameSession.status === 'VALIDATING' && gameSession.validationMode === 'AI') {
+          runAIValidation();
+        }
+        
+        if (gameSession.status === 'PLAYING') {
+          setGameTimer(60);
         }
       }
     }
@@ -83,7 +87,7 @@ export default function Home() {
     }
   }, [gameSession?.status]);
 
-  // Guest Join Logic: Add guest to members map and players array in Firestore
+  // Guest Join Logic
   useEffect(() => {
     if (gameSession && mode === 'GUEST' && user && profile && !gameSession.members[user.uid]) {
       const updatedMembers = { ...gameSession.members, [user.uid]: true };
@@ -215,17 +219,14 @@ export default function Home() {
     }
   }, [status, gameTimer]);
 
-  const handleStop = async () => {
+  const handleStop = () => {
     const activeValidationMode = gameSession?.validationMode || validationMode;
     const nextStatus = activeValidationMode === 'AI' ? 'VALIDATING' : 'MANUAL_VALIDATION';
     
+    // Only the host (or solo player) actually changes the global status
     if ((mode === 'SINGLE' || mode === 'HOST') && gameSessionRef) {
       updateDocumentNonBlocking(gameSessionRef, { status: nextStatus });
-      if (activeValidationMode === 'AI') {
-        runAIValidation();
-      }
     }
-    setStatus(nextStatus);
   };
 
   const finalizeManualValidation = () => {
@@ -244,12 +245,9 @@ export default function Home() {
       });
     }
 
-    if (gameSessionRef) {
-      updateDocumentNonBlocking(gameSessionRef, {
-        status: 'ROUND_RESULT'
-      });
+    if (gameSessionRef && (mode === 'HOST' || mode === 'SINGLE')) {
+      updateDocumentNonBlocking(gameSessionRef, { status: 'ROUND_RESULT' });
     }
-    setStatus('ROUND_RESULT');
   };
 
   const runAIValidation = async () => {
@@ -282,12 +280,12 @@ export default function Home() {
         });
       }
 
-      if (gameSessionRef) {
-        updateDocumentNonBlocking(gameSessionRef, {
-          status: 'ROUND_RESULT'
-        });
+      // If everyone is done, host moves session forward (simplified)
+      if (gameSessionRef && (mode === 'HOST' || mode === 'SINGLE')) {
+        setTimeout(() => {
+          updateDocumentNonBlocking(gameSessionRef, { status: 'ROUND_RESULT' });
+        }, 3000);
       }
-      setStatus('ROUND_RESULT');
     } catch (e) {
       toast({ title: "Validation Error", description: "AI judge failed. Using manual fallback.", variant: "destructive" });
       setStatus('MANUAL_VALIDATION');
