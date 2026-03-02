@@ -46,7 +46,6 @@ export default function Home() {
   });
 
   // Firestore Data Hooks
-  // CRITICAL: Guard these hooks with user presence to avoid permission errors before auth
   const playerProfileRef = useMemoFirebase(() => user ? doc(db, 'player_profiles', user.uid) : null, [db, user]);
   const { data: profile } = useDoc<Player>(playerProfileRef);
 
@@ -65,8 +64,7 @@ export default function Home() {
   useEffect(() => {
     if (gameSession) {
       if (status !== 'MENU' && status !== 'PROFILE') {
-        // Sync local game state status if guest or if state progressed
-        if (mode === 'GUEST' || (gameSession.status !== status)) {
+        if (gameSession.status !== status) {
           setStatus(gameSession.status);
           if (gameSession.status === 'PLAYING') {
              setGameTimer(60);
@@ -74,7 +72,40 @@ export default function Home() {
         }
       }
     }
-  }, [gameSession, mode]);
+  }, [gameSession, status]);
+
+  // Handle automatic answer clearing for new rounds
+  useEffect(() => {
+    if (gameSession?.status === 'COUNTDOWN') {
+      setLocalAnswers({ name: '', place: '', animal: '', thing: '' });
+      setManualValidation({ name: true, place: true, animal: true, thing: true });
+      setGameTimer(60);
+    }
+  }, [gameSession?.status]);
+
+  // Guest Join Logic: Add guest to members map and players array in Firestore
+  useEffect(() => {
+    if (gameSession && mode === 'GUEST' && user && profile && !gameSession.members[user.uid]) {
+      const updatedMembers = { ...gameSession.members, [user.uid]: true };
+      const guestPlayer: Player = {
+        id: user.uid,
+        nickname: profile.nickname,
+        avatar: profile.avatar,
+        isHost: false,
+        score: profile.score || 0
+      };
+      
+      const updatedPlayers = [...gameSession.players];
+      if (!updatedPlayers.find(p => p.id === user.uid)) {
+        updatedPlayers.push(guestPlayer);
+      }
+      
+      updateDocumentNonBlocking(doc(db, 'game_sessions', roomCode), {
+        members: updatedMembers,
+        players: updatedPlayers
+      });
+    }
+  }, [gameSession, mode, user, profile, roomCode, db]);
 
   const handleSignIn = () => {
     initiateAnonymousSignIn(auth);
@@ -185,19 +216,16 @@ export default function Home() {
   }, [status, gameTimer]);
 
   const handleStop = async () => {
-    // Determine the next status based on the mode set in the session
     const activeValidationMode = gameSession?.validationMode || validationMode;
     const nextStatus = activeValidationMode === 'AI' ? 'VALIDATING' : 'MANUAL_VALIDATION';
     
-    setStatus(nextStatus);
-    
     if ((mode === 'SINGLE' || mode === 'HOST') && gameSessionRef) {
       updateDocumentNonBlocking(gameSessionRef, { status: nextStatus });
-      
       if (activeValidationMode === 'AI') {
         runAIValidation();
       }
     }
+    setStatus(nextStatus);
   };
 
   const finalizeManualValidation = () => {
@@ -285,7 +313,7 @@ export default function Home() {
               )}
             </div>
             <CardTitle className="text-4xl font-bold tracking-tight text-primary">LetterLink Live</CardTitle>
-            <CardDescription className="text-lg">Real-time word game with persistent profiles</CardDescription>
+            <CardDescription className="text-lg">Real-time multiplayer word game</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <Button className="w-full h-14 text-xl font-semibold gap-3 bg-primary hover:bg-primary/90 rounded-2xl" onClick={() => startNewGame('SINGLE')}>
@@ -295,7 +323,7 @@ export default function Home() {
               <Button variant="outline" className="h-14 text-lg font-semibold gap-2 border-2 hover:bg-accent/10 rounded-2xl" onClick={() => startNewGame('HOST')}>
                 <Users className="w-5 h-5" /> Host
               </Button>
-              <Button variant="outline" className="h-14 text-lg font-semibold gap-2 border-2 hover:bg-accent/10 rounded-2xl" onClick={() => setStatus('JOIN_ROOM')}>
+              <Button variant="outline" className="h-14 text-lg font-semibold gap-2 border-2 hover:bg-accent/10 rounded-2xl" onClick={() => startNewGame('GUEST')}>
                 <LogIn className="w-5 h-5" /> Join
               </Button>
             </div>
@@ -358,26 +386,28 @@ export default function Home() {
               onChange={(e) => setNickname(e.target.value)}
             />
             
-            <div className="flex items-center justify-between p-4 bg-muted/50 rounded-2xl border border-primary/10">
-               <div className="flex items-center gap-2">
-                 <Settings className="w-5 h-5 text-muted-foreground" />
-                 <span className="font-medium text-sm">Validation Mode</span>
-               </div>
-               <div className="flex gap-2">
-                  <Button 
-                    size="sm" 
-                    variant={validationMode === 'AI' ? 'default' : 'outline'} 
-                    onClick={() => setValidationMode('AI')}
-                    className="rounded-full px-4"
-                  >AI</Button>
-                  <Button 
-                    size="sm" 
-                    variant={validationMode === 'HUMAN' ? 'default' : 'outline'} 
-                    onClick={() => setValidationMode('HUMAN')}
-                    className="rounded-full px-4"
-                  >Manual</Button>
-               </div>
-            </div>
+            {(mode === 'HOST' || mode === 'SINGLE') && (
+              <div className="flex items-center justify-between p-4 bg-muted/50 rounded-2xl border border-primary/10">
+                 <div className="flex items-center gap-2">
+                   <Settings className="w-5 h-5 text-muted-foreground" />
+                   <span className="font-medium text-sm">Validation Mode</span>
+                 </div>
+                 <div className="flex gap-2">
+                    <Button 
+                      size="sm" 
+                      variant={validationMode === 'AI' ? 'default' : 'outline'} 
+                      onClick={() => setValidationMode('AI')}
+                      className="rounded-full px-4"
+                    >AI</Button>
+                    <Button 
+                      size="sm" 
+                      variant={validationMode === 'HUMAN' ? 'default' : 'outline'} 
+                      onClick={() => setValidationMode('HUMAN')}
+                      className="rounded-full px-4"
+                    >Manual</Button>
+                 </div>
+              </div>
+            )}
 
             <Button className="w-full h-12 text-lg font-bold bg-accent hover:bg-accent/90 rounded-xl" onClick={finalizeProfile}>
               Ready to Play <ArrowRight className="ml-2 w-5 h-5" />
@@ -397,11 +427,13 @@ export default function Home() {
           </CardHeader>
           <CardContent className="space-y-6">
             <div className="space-y-3">
-              <div className="flex items-center gap-3 p-3 bg-muted/50 rounded-2xl border-l-4 border-primary">
-                <span className="text-2xl">{profile?.avatar || avatar}</span>
-                <span className="font-semibold text-lg flex-1">{profile?.nickname || nickname} (You)</span>
-                <Badge className="bg-primary">Host</Badge>
-              </div>
+              {gameSession?.players.map(p => (
+                <div key={p.id} className="flex items-center gap-3 p-3 bg-muted/50 rounded-2xl border-l-4 border-primary">
+                  <span className="text-2xl">{p.avatar}</span>
+                  <span className="font-semibold text-lg flex-1">{p.nickname} {p.id === user?.uid ? '(You)' : ''}</span>
+                  {p.isHost && <Badge className="bg-primary">Host</Badge>}
+                </div>
+              ))}
             </div>
             
             {mode !== 'GUEST' ? (
@@ -411,7 +443,7 @@ export default function Home() {
             ) : (
               <div className="text-center animate-pulse text-muted-foreground font-medium">Waiting for Host to start...</div>
             )}
-            <Button variant="ghost" className="w-full" onClick={() => setStatus('MENU')}>Leave</Button>
+            <Button variant="ghost" className="w-full" onClick={() => { setRoomCode(''); setStatus('MENU'); }}>Leave</Button>
           </CardContent>
         </Card>
       )}
@@ -541,7 +573,6 @@ export default function Home() {
 
                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {['name', 'place', 'animal', 'thing'].map(cat => {
-                    // In result view, consider valid if it was Manual validated OK OR if AI check was bypassed/passed
                     const isValid = gameSession?.validationMode === 'AI' ? true : manualValidation[cat]; 
                     return (
                       <div key={cat} className="p-4 rounded-2xl bg-muted/30 border-2 border-primary/5 flex items-center justify-between">
@@ -562,19 +593,11 @@ export default function Home() {
           </Card>
 
           {mode !== 'GUEST' && (
-            <Button className="w-full h-14 text-xl font-bold bg-primary rounded-2xl shadow-xl" onClick={() => {
-              setLocalAnswers({ name: '', place: '', animal: '', thing: '' });
-              setManualValidation({ name: true, place: true, animal: true, thing: true });
-              setGameTimer(60);
-              initiateRound();
-            }}>
+            <Button className="w-full h-14 text-xl font-bold bg-primary rounded-2xl shadow-xl" onClick={initiateRound}>
               Next Round <Play className="ml-2 w-6 h-6" />
             </Button>
           )}
-          <Button variant="outline" className="w-full h-12" onClick={() => {
-            setRoomCode('');
-            setStatus('MENU');
-          }}>Main Menu</Button>
+          <Button variant="outline" className="w-full h-12" onClick={() => { setRoomCode(''); setStatus('MENU'); }}>Main Menu</Button>
         </div>
       )}
     </div>
