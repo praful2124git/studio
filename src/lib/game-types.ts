@@ -12,6 +12,12 @@ export type GameStatus =
   | 'ROUND_RESULT' 
   | 'GAME_OVER';
 
+export interface CategoryResult {
+  isValid: boolean;
+  reason: string;
+  answer: string;
+}
+
 export interface Player {
   id: string;
   nickname: string;
@@ -19,7 +25,7 @@ export interface Player {
   isHost: boolean;
   score: number;
   lastRoundScore?: number;
-  answers?: RoundAnswers;
+  lastRoundResults?: Record<string, CategoryResult>;
 }
 
 export interface RoundAnswers {
@@ -35,10 +41,10 @@ export interface Submission {
   nickname: string;
   avatar: string;
   answers: RoundAnswers;
+  roundCount: number;
 }
 
 export interface GameState {
-  players: Player[];
   status: GameStatus;
   currentLetter: string;
   timer: number;

@@ -9,9 +9,9 @@ import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
 import { 
   Users, User, Play, LogIn, Trophy, Timer as TimerIcon, 
-  ArrowRight, Settings, LogOut, ShieldCheck, ShieldAlert, Rocket, Globe, Copy 
+  ArrowRight, Settings, LogOut, ShieldCheck, ShieldAlert, Rocket, Globe, Copy, ChevronDown, ChevronUp, CheckCircle2, XCircle
 } from 'lucide-react';
-import { GameStatus, Player, GameMode, GameState, RoundAnswers, Submission } from '@/lib/game-types';
+import { GameStatus, Player, GameMode, GameState, RoundAnswers, Submission, CategoryResult } from '@/lib/game-types';
 import { validateAnswers } from '@/ai/flows/ai-answer-validation-flow';
 import { 
   useUser, useFirestore, useDoc, useMemoFirebase, useCollection,
@@ -27,6 +27,7 @@ import {
   CarouselNext,
   CarouselPrevious,
 } from "@/components/ui/carousel";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion';
 
 const AVATARS = ['🐶', '🐱', '🐭', '🐹', '🐰', '🦊', '🐻', '🐼', '🐨', '🐯', '🦁', '🐮', '🐷', '🐸', '🐵'];
 const CATEGORIES = ['Name', 'Place', 'Animal', 'Thing'];
@@ -69,11 +70,13 @@ export default function Home() {
   // Submissions listener
   const submissionsRef = useMemoFirebase(() => {
     if (!roomCode || !gameSession || !user) return null;
+    // Only fetch if user is part of members to avoid permission errors
+    if (!gameSession.members?.[user.uid]) return null;
     return query(
       collection(db, 'game_sessions', roomCode, 'submissions'),
       where('roundCount', '==', gameSession.roundCount)
     );
-  }, [db, roomCode, gameSession?.roundCount, user]);
+  }, [db, roomCode, gameSession, user]);
   
   const { data: submissions } = useCollection<Submission>(submissionsRef);
 
@@ -246,7 +249,7 @@ export default function Home() {
     if (!gameSession || !user || gameSession.hostPlayerId !== user.uid || !sessionPlayers) return;
     const letter = gameSession.currentLetter;
     
-    // Small delay to let all submissions settle in Firestore
+    // Delay to let all submissions settle
     await new Promise(r => setTimeout(r, 2000));
     
     const allSubmissions = submissions || [];
@@ -254,6 +257,7 @@ export default function Home() {
     await Promise.all(sessionPlayers.map(async (p) => {
       const sub = allSubmissions.find(s => s.playerId === p.id);
       let roundScore = 0;
+      const lastRoundResults: Record<string, CategoryResult> = {};
 
       if (sub) {
         try {
@@ -268,16 +272,29 @@ export default function Home() {
           CATEGORIES.forEach(cat => {
             const valKey = `${cat.toLowerCase()}Validation` as keyof typeof result;
             const val = (result as any)[valKey];
+            const answer = sub.answers[cat.toLowerCase() as keyof RoundAnswers] || '—';
+            
+            lastRoundResults[cat.toLowerCase()] = {
+              isValid: !!val?.isValid,
+              reason: val?.reason || 'No validation provided',
+              answer
+            };
+
             if (val?.isValid) roundScore += 10;
           });
         } catch (e) {
           console.error("AI Validation Error:", e);
         }
+      } else {
+        CATEGORIES.forEach(cat => {
+          lastRoundResults[cat.toLowerCase()] = { isValid: false, reason: 'No submission found.', answer: '—' };
+        });
       }
 
       updateDocumentNonBlocking(doc(db, 'game_sessions', roomCode, 'players', p.id), {
         score: (p.score || 0) + roundScore,
-        lastRoundScore: roundScore
+        lastRoundScore: roundScore,
+        lastRoundResults
       });
     }));
 
@@ -291,14 +308,33 @@ export default function Home() {
     sessionPlayers.forEach(p => {
       let roundScore = 0;
       const playerVals = hostValidation[p.id] || {};
+      const lastRoundResults: Record<string, CategoryResult> = {};
+      const sub = (submissions || []).find(s => s.playerId === p.id);
+
       CATEGORIES.forEach(cat => {
         const valStatus = playerVals[cat.toLowerCase()];
-        if (valStatus === 'correct') roundScore += 10;
-        if (valStatus === 'duplicate') roundScore += 5;
+        const answer = sub?.answers[cat.toLowerCase() as keyof RoundAnswers] || '—';
+        
+        let isValid = false;
+        let reason = 'Rejected by host';
+        
+        if (valStatus === 'correct') {
+          roundScore += 10;
+          isValid = true;
+          reason = 'Accepted by host';
+        } else if (valStatus === 'duplicate') {
+          roundScore += 5;
+          isValid = true;
+          reason = 'Duplicate answer (5 pts)';
+        }
+
+        lastRoundResults[cat.toLowerCase()] = { isValid, reason, answer };
       });
+
       updateDocumentNonBlocking(doc(db, 'game_sessions', roomCode, 'players', p.id), {
         score: (p.score || 0) + roundScore,
-        lastRoundScore: roundScore
+        lastRoundScore: roundScore,
+        lastRoundResults
       });
     });
     if (gameSessionRef) {
@@ -644,22 +680,48 @@ export default function Home() {
             <CardContent className="p-0">
                <div className="divide-y">
                   {sortedPlayers.map((p, index) => (
-                    <div key={p.id} className={`flex items-center justify-between p-6 transition-all ${p.id === user?.uid ? 'bg-primary/5' : ''}`}>
-                      <div className="flex items-center gap-6">
-                        <span className="text-3xl font-black text-muted-foreground w-8">#{index + 1}</span>
-                        <span className="text-5xl drop-shadow-md">{p.avatar}</span>
-                        <div>
-                          <h4 className="text-2xl font-black text-primary flex items-center gap-2">
-                            {p.nickname}
-                            {p.id === user?.uid && <Badge variant="outline" className="text-[10px] uppercase">You</Badge>}
-                          </h4>
-                          <p className="text-muted-foreground font-bold">Round Gain: +{p.lastRoundScore || 0} pts</p>
+                    <div key={p.id} className={`flex flex-col p-6 transition-all ${p.id === user?.uid ? 'bg-primary/5' : ''}`}>
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-6">
+                          <span className="text-3xl font-black text-muted-foreground w-8">#{index + 1}</span>
+                          <span className="text-5xl drop-shadow-md">{p.avatar}</span>
+                          <div>
+                            <h4 className="text-2xl font-black text-primary flex items-center gap-2">
+                              {p.nickname}
+                              {p.id === user?.uid && <Badge variant="outline" className="text-[10px] uppercase">You</Badge>}
+                            </h4>
+                            <p className="text-muted-foreground font-bold">Round Gain: +{p.lastRoundScore || 0} pts</p>
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-3xl font-black text-primary">{p.score || 0} pts</p>
+                          <p className="text-xs font-black uppercase text-accent tracking-tighter">Total Score</p>
                         </div>
                       </div>
-                      <div className="text-right">
-                        <p className="text-3xl font-black text-primary">{p.score || 0} pts</p>
-                        <p className="text-xs font-black uppercase text-accent tracking-tighter">Total Score</p>
-                      </div>
+                      
+                      {p.lastRoundResults && (
+                        <Accordion type="single" collapsible className="w-full mt-4">
+                          <AccordionItem value="details" className="border-none">
+                            <AccordionTrigger className="hover:no-underline py-2 text-xs font-bold uppercase tracking-widest text-muted-foreground">
+                              View Validation Details
+                            </AccordionTrigger>
+                            <AccordionContent>
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
+                                {Object.entries(p.lastRoundResults).map(([cat, res]) => (
+                                  <div key={cat} className="p-3 bg-muted/30 rounded-xl border flex items-start gap-3">
+                                    {res.isValid ? <CheckCircle2 className="w-5 h-5 text-green-500 shrink-0" /> : <XCircle className="w-5 h-5 text-destructive shrink-0" />}
+                                    <div className="space-y-1">
+                                      <p className="text-[10px] font-black uppercase text-muted-foreground tracking-widest">{cat}</p>
+                                      <p className="text-lg font-bold leading-none">{res.answer}</p>
+                                      <p className="text-xs text-muted-foreground italic leading-tight">{res.reason}</p>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </AccordionContent>
+                          </AccordionItem>
+                        </Accordion>
+                      )}
                     </div>
                   ))}
                </div>
