@@ -9,8 +9,7 @@ import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
 import { 
   Users, User, Play, LogIn, Trophy, Timer as TimerIcon, 
-  CheckCircle2, XCircle, ArrowRight, Settings, LogOut, 
-  ShieldCheck, ShieldAlert, Rocket, Globe, Copy 
+  ArrowRight, Settings, LogOut, ShieldCheck, ShieldAlert, Rocket, Globe, Copy 
 } from 'lucide-react';
 import { GameStatus, Player, GameMode, GameState, RoundAnswers, Submission } from '@/lib/game-types';
 import { validateAnswers } from '@/ai/flows/ai-answer-validation-flow';
@@ -174,58 +173,65 @@ export default function Home() {
     setStatus('PROFILE');
   };
 
-  const finalizeProfile = () => {
+  const finalizeProfile = async () => {
     if (!nickname.trim()) {
       toast({ title: "Nickname required", description: "Who are you?" });
       return;
     }
 
-    if (user) {
-      const pData: Player = {
-        id: user.uid,
-        nickname,
-        avatar,
-        isHost: mode === 'HOST' || mode === 'SINGLE',
-        score: profile?.score || 0,
+    if (!user) return;
+
+    const pData: Player = {
+      id: user.uid,
+      nickname,
+      avatar,
+      isHost: mode === 'HOST' || mode === 'SINGLE',
+      score: profile?.score || 0,
+    };
+    
+    // Update global profile
+    setDocumentNonBlocking(doc(db, 'player_profiles', user.uid), pData, { merge: true });
+
+    if (mode === 'HOST' || mode === 'SINGLE') {
+      const code = mode === 'SINGLE' ? `SOLO-${user.uid.substring(0, 4)}` : Math.floor(1000 + Math.random() * 9000).toString();
+      setRoomCode(code);
+      
+      const initialSession: GameState = {
+        players: [pData],
+        status: 'LOBBY',
+        currentLetter: '',
+        timer: 60,
+        roomCode: code,
+        roundCount: 0,
+        validationMode: validationMode,
+        hostPlayerId: user.uid,
+        members: { [user.uid]: true }
       };
       
-      // Update global profile
-      setDocumentNonBlocking(doc(db, 'player_profiles', user.uid), pData, { merge: true });
-
-      if (mode === 'HOST' || mode === 'SINGLE') {
-        const code = mode === 'SINGLE' ? `SOLO-${user.uid.substring(0, 4)}` : Math.floor(1000 + Math.random() * 9000).toString();
-        setRoomCode(code);
+      setDocumentNonBlocking(doc(db, 'game_sessions', code), initialSession, { merge: true });
+      setStatus('LOBBY');
+    } else if (mode === 'GUEST') {
+      // Join existing session in lobby
+      const sessionRef = doc(db, 'game_sessions', roomCode);
+      const sessionDoc = await getDoc(sessionRef);
+      
+      if (sessionDoc.exists()) {
+        const sessionData = sessionDoc.data() as GameState;
+        const updatedMembers = { ...(sessionData.members || {}), [user.uid]: true };
+        const updatedPlayers = [...(sessionData.players || [])];
         
-        const initialSession: GameState = {
-          players: [pData],
-          status: 'LOBBY',
-          currentLetter: '',
-          timer: 60,
-          roomCode: code,
-          roundCount: 0,
-          validationMode: validationMode,
-          hostPlayerId: user.uid,
-          members: { [user.uid]: true }
-        };
-        
-        setDocumentNonBlocking(doc(db, 'game_sessions', code), initialSession, { merge: true });
-        setStatus('LOBBY');
-      } else if (mode === 'GUEST') {
-        // Join existing session in lobby
-        if (gameSessionRef) {
-          const updatedMembers = { ...(gameSession?.members || {}), [user.uid]: true };
-          const updatedPlayers = [...(gameSession?.players || [])];
-          
-          if (!updatedPlayers.find(p => p.id === user.uid)) {
-            updatedPlayers.push(pData);
-          }
-
-          updateDocumentNonBlocking(gameSessionRef, {
-            members: updatedMembers,
-            players: updatedPlayers
-          });
+        if (!updatedPlayers.find(p => p.id === user.uid)) {
+          updatedPlayers.push(pData);
         }
+
+        updateDocumentNonBlocking(sessionRef, {
+          members: updatedMembers,
+          players: updatedPlayers
+        });
         setStatus('LOBBY');
+      } else {
+        toast({ title: "Room disappeared", description: "This room is no longer active.", variant: "destructive" });
+        setStatus('MENU');
       }
     }
   };
@@ -295,7 +301,7 @@ export default function Home() {
   };
 
   const finalizeManualValidation = () => {
-    if (!gameSession || !submissions) return;
+    if (!gameSession) return;
 
     const updatedPlayers = gameSession.players.map(p => {
       let roundScore = 0;
@@ -344,12 +350,9 @@ export default function Home() {
 
       const updatedTotalScore = (profile?.score || 0) + roundScore;
       
-      updateDocumentNonBlocking(doc(db, 'player_profiles', user.uid), {
-        score: updatedTotalScore,
-        lastRoundScore: roundScore
-      });
+      // We don't update profile here directly anymore to avoid permission errors if multiple people do it.
+      // Every player updates their OWN profile in a separate useEffect watching gameSession status.
       
-      // If host, finalize after a delay for others to finish
       if (gameSessionRef && (mode === 'HOST' || mode === 'SINGLE')) {
         setTimeout(() => {
           // Note: In real production we'd collect all scores, for MVP host's AI results finalize the session
@@ -458,7 +461,7 @@ export default function Home() {
         <Card className="w-full max-w-md border-2 border-primary/20 shadow-2xl bg-card">
           <CardHeader className="text-center">
             <CardTitle className="text-2xl font-bold">Who are you today?</CardTitle>
-            <CardDescription>Pick an avatar and a nickname</CardDescription>
+            <CardDescription>Pick an avatar and a nickname for this session</CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
             <div className="flex flex-wrap justify-center gap-3">
@@ -619,16 +622,17 @@ export default function Home() {
                         <div className="p-4 bg-muted/20 rounded-3xl border-2 border-primary/10">
                           <h3 className="text-2xl font-black text-primary text-center mb-6 uppercase tracking-widest">{cat}</h3>
                           <div className="space-y-3">
-                            {submissions?.map(sub => {
-                              const answer = sub.answers[cat.toLowerCase() as keyof RoundAnswers];
-                              const currentVal = hostValidation[sub.playerId]?.[cat.toLowerCase()];
+                            {gameSession?.players.map(p => {
+                              const sub = submissions?.find(s => s.playerId === p.id);
+                              const answer = sub?.answers[cat.toLowerCase() as keyof RoundAnswers];
+                              const currentVal = hostValidation[p.id]?.[cat.toLowerCase()];
                               
                               return (
-                                <div key={sub.id} className="flex items-center justify-between p-4 bg-card rounded-2xl border shadow-sm">
+                                <div key={p.id} className="flex items-center justify-between p-4 bg-card rounded-2xl border shadow-sm">
                                   <div className="flex items-center gap-3">
-                                    <span className="text-2xl">{sub.avatar}</span>
+                                    <span className="text-2xl">{p.avatar}</span>
                                     <div>
-                                      <p className="text-xs font-bold text-muted-foreground">{sub.nickname}</p>
+                                      <p className="text-xs font-bold text-muted-foreground">{p.nickname} {p.id === user.uid ? '(Host)' : ''}</p>
                                       <p className="text-xl font-black">{answer || '—'}</p>
                                     </div>
                                   </div>
@@ -639,7 +643,7 @@ export default function Home() {
                                       className={`rounded-xl h-10 w-10 ${currentVal === 'correct' ? 'bg-green-500' : ''}`}
                                       onClick={() => setHostValidation(prev => ({
                                         ...prev,
-                                        [sub.playerId]: { ...prev[sub.playerId], [cat.toLowerCase()]: 'correct' }
+                                        [p.id]: { ...prev[p.id], [cat.toLowerCase()]: 'correct' }
                                       }))}
                                     >
                                       <ShieldCheck className="w-5 h-5" />
@@ -650,7 +654,7 @@ export default function Home() {
                                       className={`rounded-xl h-10 w-10 ${currentVal === 'duplicate' ? 'bg-accent' : ''}`}
                                       onClick={() => setHostValidation(prev => ({
                                         ...prev,
-                                        [sub.playerId]: { ...prev[sub.playerId], [cat.toLowerCase()]: 'duplicate' }
+                                        [p.id]: { ...prev[p.id], [cat.toLowerCase()]: 'duplicate' }
                                       }))}
                                     >
                                       <Copy className="w-5 h-5" />
@@ -661,7 +665,7 @@ export default function Home() {
                                       className="rounded-xl h-10 w-10"
                                       onClick={() => setHostValidation(prev => ({
                                         ...prev,
-                                        [sub.playerId]: { ...prev[sub.playerId], [cat.toLowerCase()]: 'wrong' }
+                                        [p.id]: { ...prev[p.id], [cat.toLowerCase()]: 'wrong' }
                                       }))}
                                     >
                                       <ShieldAlert className="w-5 h-5" />
