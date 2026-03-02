@@ -44,6 +44,8 @@ export interface GameState {
   roomCode?: string;
   roundCount: number;
   validationMode: 'AI' | 'HUMAN';
+  hostPlayerId: string;
+  members: Record<string, boolean>;
 }
 
 export type MessageType = 

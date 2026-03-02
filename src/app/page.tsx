@@ -10,7 +10,7 @@ import { useToast } from '@/hooks/use-toast';
 import { Users, User, Play, LogIn, Trophy, Timer as TimerIcon, Hash, CheckCircle2, XCircle, ArrowRight, Settings, LogOut } from 'lucide-react';
 import { GameStatus, Player, GameMode, GameState, RoundAnswers } from '@/lib/game-types';
 import { validateAnswers } from '@/ai/flows/ai-answer-validation-flow';
-import { useUser, useFirestore, useDoc, useCollection, useMemoFirebase, setDocumentNonBlocking, updateDocumentNonBlocking, initiateAnonymousSignIn } from '@/firebase';
+import { useUser, useFirestore, useDoc, useMemoFirebase, setDocumentNonBlocking, updateDocumentNonBlocking, initiateAnonymousSignIn } from '@/firebase';
 import { doc, collection, query, where, serverTimestamp } from 'firebase/firestore';
 import { signOut } from 'firebase/auth';
 import { useAuth } from '@/firebase';
@@ -91,14 +91,18 @@ export default function Home() {
         id: user.uid,
         nickname,
         avatar,
-        isHost: mode === 'HOST',
+        isHost: mode === 'HOST' || mode === 'SINGLE',
         score: profile?.score || 0,
       };
       setDocumentNonBlocking(doc(db, 'player_profiles', user.uid), pData, { merge: true });
 
-      if (mode === 'HOST') {
-        const code = Math.floor(1000 + Math.random() * 9000).toString();
+      if (mode === 'HOST' || mode === 'SINGLE') {
+        const code = mode === 'SINGLE' 
+          ? 'SOLO-' + user.uid.substring(0, 4)
+          : Math.floor(1000 + Math.random() * 9000).toString();
+        
         setRoomCode(code);
+        
         const initialSession: GameState = {
           players: [pData],
           status: 'LOBBY',
@@ -107,11 +111,11 @@ export default function Home() {
           roomCode: code,
           roundCount: 1,
           validationMode: validationMode,
+          hostPlayerId: user.uid,
+          members: { [user.uid]: true }
         };
+        
         setDocumentNonBlocking(doc(db, 'game_sessions', code), initialSession, { merge: true });
-        setStatus('LOBBY');
-      } else if (mode === 'SINGLE') {
-        setRoomCode('SOLO-' + user.uid.substring(0, 4));
         setStatus('LOBBY');
       } else {
         setStatus('JOIN_ROOM');
@@ -125,7 +129,6 @@ export default function Home() {
       return;
     }
     setRoomCode(inputCode);
-    // Add to members logic would go here, for now we just listen to the doc
     setStatus('LOBBY');
   };
 
@@ -178,7 +181,6 @@ export default function Home() {
       updateDocumentNonBlocking(gameSessionRef, { status: 'VALIDATING' });
     }
     
-    // Save local submission to session history if needed, for now we process local
     if (mode === 'SINGLE' || mode === 'HOST') {
         runAIValidation();
     }
@@ -201,7 +203,7 @@ export default function Home() {
       const cats: (keyof RoundAnswers)[] = ['name', 'place', 'animal', 'thing'];
       cats.forEach(cat => {
         const val = result[`${cat}Validation` as keyof typeof result] as any;
-        if (val?.isValid) roundScore += 10; // Simplified for solo/host focus
+        if (val?.isValid) roundScore += 10;
       });
 
       const updatedScore = (profile?.score || 0) + roundScore;
@@ -233,7 +235,7 @@ export default function Home() {
         <Card className="w-full max-w-md border-2 border-primary/20 shadow-2xl bg-card/80 backdrop-blur-md">
           <CardHeader className="text-center">
             <div className="flex justify-between items-start">
-              <div className="w-10" /> {/* Spacer */}
+              <div className="w-10" />
               <div className="p-4 bg-primary/10 rounded-3xl animate-float">
                 <Hash className="w-12 h-12 text-accent" />
               </div>
