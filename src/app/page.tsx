@@ -54,7 +54,6 @@ export default function Home() {
     thing: '',
   });
 
-  // Host-only validation state for all players
   const [hostValidation, setHostValidation] = useState<{ [playerId: string]: { [category: string]: 'correct' | 'duplicate' | 'wrong' } }>({});
 
   // Firestore Data Hooks
@@ -65,16 +64,15 @@ export default function Home() {
   const { data: gameSession } = useDoc<GameState>(gameSessionRef);
 
   const submissionsRef = useMemoFirebase(() => {
-    if (!roomCode || !gameSession) return null;
-    // Filter submissions by current round number to avoid crosstalk
+    if (!roomCode || !gameSession || !user) return null;
+    // Filter submissions by current round number to avoid crosstalk and security list issues
     return query(
       collection(db, 'game_sessions', roomCode, 'submissions'),
       where('roundCount', '==', gameSession.roundCount)
     );
-  }, [db, roomCode, gameSession?.roundCount]);
+  }, [db, roomCode, gameSession?.roundCount, user]);
   const { data: submissions } = useCollection<Submission>(submissionsRef);
 
-  // Sync profile locally if it exists
   useEffect(() => {
     if (profile) {
       setNickname(profile.nickname || '');
@@ -82,7 +80,6 @@ export default function Home() {
     }
   }, [profile]);
 
-  // Handle room joining and game status synchronization
   useEffect(() => {
     if (gameSession && user) {
       if (gameSession.status !== status) {
@@ -99,7 +96,6 @@ export default function Home() {
     }
   }, [gameSession, status, user]);
 
-  // Reset local state for new rounds
   useEffect(() => {
     if (gameSession?.status === 'COUNTDOWN') {
       setLocalAnswers({ name: '', place: '', animal: '', thing: '' });
@@ -108,7 +104,6 @@ export default function Home() {
     }
   }, [gameSession?.status]);
 
-  // Guest Join Logic
   useEffect(() => {
     if (gameSession && mode === 'GUEST' && user && profile && !gameSession.members[user.uid]) {
       const updatedMembers = { ...gameSession.members, [user.uid]: true };
@@ -213,6 +208,14 @@ export default function Home() {
     setStatus('COUNTDOWN');
   };
 
+  const toggleValidationMode = () => {
+    const nextMode = validationMode === 'AI' ? 'HUMAN' : 'AI';
+    setValidationMode(nextMode);
+    if (gameSessionRef) {
+      updateDocumentNonBlocking(gameSessionRef, { validationMode: nextMode });
+    }
+  };
+
   const [countdown, setCountdown] = useState(3);
   useEffect(() => {
     if (status === 'COUNTDOWN') {
@@ -244,7 +247,6 @@ export default function Home() {
   const handleStop = () => {
     if (!user || !roomCode || !gameSession) return;
 
-    // Submit answers
     const subRef = doc(db, 'game_sessions', roomCode, 'submissions', user.uid);
     setDocumentNonBlocking(subRef, {
       id: user.uid,
@@ -253,7 +255,7 @@ export default function Home() {
       avatar: profile?.avatar || avatar,
       answers: localAnswers,
       roundCount: gameSession.roundCount,
-      members: gameSession.members, // Denormalize members for list security
+      members: gameSession.members, 
       hostPlayerId: gameSession.hostPlayerId
     }, { merge: true });
 
@@ -292,7 +294,6 @@ export default function Home() {
       });
     }
     
-    // Also update individual profile docs for persistence
     updatedPlayers.forEach(up => {
       updateDocumentNonBlocking(doc(db, 'player_profiles', up.id), {
         score: up.score,
@@ -330,7 +331,6 @@ export default function Home() {
           lastRoundScore: roundScore
         });
         
-        // Update players array in session for scoreboard
         if (gameSessionRef) {
           const updatedPlayers = gameSession.players.map(p => {
             if (p.id === user.uid) return { ...p, score: updatedScore, lastRoundScore: roundScore };
@@ -343,11 +343,13 @@ export default function Home() {
       if (gameSessionRef && (mode === 'HOST' || mode === 'SINGLE')) {
         setTimeout(() => {
           updateDocumentNonBlocking(gameSessionRef, { status: 'ROUND_RESULT' });
-        }, 3000);
+        }, 4000);
       }
     } catch (e) {
       toast({ title: "Validation Error", description: "AI judge failed. Using manual fallback.", variant: "destructive" });
-      setStatus('MANUAL_VALIDATION');
+      if (gameSessionRef && (mode === 'HOST' || mode === 'SINGLE')) {
+        updateDocumentNonBlocking(gameSessionRef, { status: 'MANUAL_VALIDATION' });
+      }
     }
   };
 
@@ -458,29 +460,6 @@ export default function Home() {
               onChange={(e) => setNickname(e.target.value)}
             />
             
-            {(mode === 'HOST' || mode === 'SINGLE') && (
-              <div className="flex items-center justify-between p-4 bg-muted/50 rounded-2xl border border-primary/10">
-                 <div className="flex items-center gap-2">
-                   <Settings className="w-5 h-5 text-muted-foreground" />
-                   <span className="font-medium text-sm">Validation Mode</span>
-                 </div>
-                 <div className="flex gap-2">
-                    <Button 
-                      size="sm" 
-                      variant={validationMode === 'AI' ? 'default' : 'outline'} 
-                      onClick={() => setValidationMode('AI')}
-                      className="rounded-full px-4"
-                    >AI</Button>
-                    <Button 
-                      size="sm" 
-                      variant={validationMode === 'HUMAN' ? 'default' : 'outline'} 
-                      onClick={() => setValidationMode('HUMAN')}
-                      className="rounded-full px-4"
-                    >Manual</Button>
-                 </div>
-              </div>
-            )}
-
             <Button className="w-full h-14 text-xl font-bold bg-accent hover:bg-accent/90 rounded-2xl" onClick={finalizeProfile}>
               Let's Play <ArrowRight className="ml-2 w-6 h-6" />
             </Button>
@@ -510,6 +489,29 @@ export default function Home() {
                 </div>
               ))}
             </div>
+
+            {gameSession?.hostPlayerId === user?.uid && (
+              <div className="flex items-center justify-between p-4 bg-muted/50 rounded-2xl border border-primary/10">
+                 <div className="flex items-center gap-2">
+                   <Settings className="w-5 h-5 text-muted-foreground" />
+                   <span className="font-medium text-sm">Judge Mode</span>
+                 </div>
+                 <div className="flex gap-2">
+                    <Button 
+                      size="sm" 
+                      variant={(gameSession?.validationMode || validationMode) === 'AI' ? 'default' : 'outline'} 
+                      onClick={() => toggleValidationMode()}
+                      className="rounded-full px-4"
+                    >AI</Button>
+                    <Button 
+                      size="sm" 
+                      variant={(gameSession?.validationMode || validationMode) === 'HUMAN' ? 'default' : 'outline'} 
+                      onClick={() => toggleValidationMode()}
+                      className="rounded-full px-4"
+                    >Manual</Button>
+                 </div>
+              </div>
+            )}
             
             {gameSession?.hostPlayerId === user?.uid ? (
               <Button className="w-full h-14 text-xl font-bold bg-primary hover:bg-primary/90 rounded-2xl shadow-xl" onClick={initiateRound}>

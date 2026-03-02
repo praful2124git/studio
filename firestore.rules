@@ -26,8 +26,12 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == hostId;
     }
 
-    function isMember(membersMap) {
-      return isSignedIn() && membersMap.keys().hasAny([request.auth.uid]);
+    function getSession(gameSessionId) {
+      return get(/databases/$(database)/documents/game_sessions/$(gameSessionId)).data;
+    }
+
+    function isSessionMember(gameSessionId) {
+      return isSignedIn() && getSession(gameSessionId).members.keys().hasAny([request.auth.uid]);
     }
 
     // --- Collection Rules ---
@@ -42,14 +46,14 @@ service cloud.firestore {
     match /game_sessions/{gameSessionId} {
       allow get, list: if isSignedIn();
       allow create: if isSignedIn() && request.resource.data.hostPlayerId == request.auth.uid;
-      allow update: if isExistingOwner(resource.data.hostPlayerId) || isSignedIn();
-      allow delete: if isExistingOwner(resource.data.hostPlayerId);
+      allow update: if isHost(resource.data.hostPlayerId) || isSignedIn();
+      allow delete: if isHost(resource.data.hostPlayerId);
 
-      // Rule for submissions subcollection
+      // Rule for submissions subcollection - Secured by parent session membership
       match /submissions/{playerId} {
-        allow get, list: if isMember(resource.data.members);
-        allow create, update: if isOwner(playerId) && isMember(request.resource.data.members);
-        allow delete: if isOwner(playerId) || isHost(resource.data.hostPlayerId);
+        allow get, list: if isSessionMember(gameSessionId);
+        allow create, update: if isOwner(playerId);
+        allow delete: if isOwner(playerId) || isHost(getSession(gameSessionId).hostPlayerId);
       }
     }
   }
