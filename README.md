@@ -3,7 +3,7 @@
 
 A real-time multiplayer word game powered by AI.
 
-## Deployment Guide
+## Deployment Guides
 
 You can deploy this application for free using **Firebase App Hosting**. Follow these steps:
 
