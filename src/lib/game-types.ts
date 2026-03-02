@@ -8,6 +8,7 @@ export type GameStatus =
   | 'COUNTDOWN' 
   | 'PLAYING' 
   | 'VALIDATING' 
+  | 'MANUAL_VALIDATION'
   | 'ROUND_RESULT' 
   | 'GAME_OVER';
 

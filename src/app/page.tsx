@@ -7,8 +7,8 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
-import { Users, User, Play, LogIn, Trophy, Timer as TimerIcon, Hash, CheckCircle2, XCircle, ArrowRight, Settings, LogOut } from 'lucide-react';
-import { GameStatus, Player, GameMode, GameState, RoundAnswers } from '@/lib/game-types';
+import { Users, User, Play, LogIn, Trophy, Timer as TimerIcon, Hash, CheckCircle2, XCircle, ArrowRight, Settings, LogOut, ShieldCheck, ShieldAlert } from 'lucide-react';
+import { GameStatus, Player, GameMode, GameState, RoundAnswers, ValidationResults } from '@/lib/game-types';
 import { validateAnswers } from '@/ai/flows/ai-answer-validation-flow';
 import { useUser, useFirestore, useDoc, useMemoFirebase, setDocumentNonBlocking, updateDocumentNonBlocking, initiateAnonymousSignIn } from '@/firebase';
 import { doc, collection, query, where, serverTimestamp } from 'firebase/firestore';
@@ -38,6 +38,13 @@ export default function Home() {
     thing: '',
   });
 
+  const [manualValidation, setManualValidation] = useState<{ [key: string]: boolean }>({
+    name: true,
+    place: true,
+    animal: true,
+    thing: true,
+  });
+
   // Firestore Data Hooks
   const playerProfileRef = useMemoFirebase(() => user ? doc(db, 'player_profiles', user.uid) : null, [db, user]);
   const { data: profile } = useDoc<Player>(playerProfileRef);
@@ -56,7 +63,7 @@ export default function Home() {
   // Handle room joining and game status synchronization
   useEffect(() => {
     if (gameSession) {
-      if (status === 'LOBBY' || status === 'COUNTDOWN' || status === 'PLAYING' || status === 'ROUND_RESULT') {
+      if (status !== 'MENU' && status !== 'PROFILE') {
         // Sync local game state status if not host (host controls transitions)
         if (mode === 'GUEST') {
           setStatus(gameSession.status);
@@ -141,6 +148,7 @@ export default function Home() {
         currentLetter: letter,
         status: 'COUNTDOWN',
         timer: 60,
+        roundCount: (gameSession?.roundCount || 0) + 1,
       });
     }
     setCountdown(3);
@@ -176,14 +184,39 @@ export default function Home() {
   }, [status, gameTimer]);
 
   const handleStop = async () => {
-    setStatus('VALIDATING');
+    const nextStatus = gameSession?.validationMode === 'AI' ? 'VALIDATING' : 'MANUAL_VALIDATION';
+    setStatus(nextStatus);
     if (mode !== 'GUEST' && gameSessionRef) {
-      updateDocumentNonBlocking(gameSessionRef, { status: 'VALIDATING' });
+      updateDocumentNonBlocking(gameSessionRef, { status: nextStatus });
     }
     
-    if (mode === 'SINGLE' || mode === 'HOST') {
+    if (gameSession?.validationMode === 'AI' && (mode === 'SINGLE' || mode === 'HOST')) {
         runAIValidation();
     }
+  };
+
+  const finalizeManualValidation = () => {
+    let roundScore = 0;
+    const cats: (keyof RoundAnswers)[] = ['name', 'place', 'animal', 'thing'];
+    cats.forEach(cat => {
+      if (manualValidation[cat]) roundScore += 10;
+    });
+
+    const updatedScore = (profile?.score || 0) + roundScore;
+    
+    if (user) {
+      updateDocumentNonBlocking(doc(db, 'player_profiles', user.uid), {
+        score: updatedScore,
+        lastRoundScore: roundScore
+      });
+    }
+
+    if (gameSessionRef) {
+      updateDocumentNonBlocking(gameSessionRef, {
+        status: 'ROUND_RESULT'
+      });
+    }
+    setStatus('ROUND_RESULT');
   };
 
   const runAIValidation = async () => {
@@ -222,8 +255,8 @@ export default function Home() {
       }
       setStatus('ROUND_RESULT');
     } catch (e) {
-      toast({ title: "Validation Error", description: "AI judge failed. Using basic validation.", variant: "destructive" });
-      setStatus('ROUND_RESULT');
+      toast({ title: "Validation Error", description: "AI judge failed. Using manual fallback.", variant: "destructive" });
+      setStatus('MANUAL_VALIDATION');
     }
   };
 
@@ -432,6 +465,50 @@ export default function Home() {
         </Card>
       )}
 
+      {status === 'MANUAL_VALIDATION' && (
+        <Card className="w-full max-w-md border-2 border-primary/20 shadow-2xl bg-card">
+          <CardHeader className="text-center">
+            <CardTitle className="text-2xl font-bold">Manual Validation</CardTitle>
+            <CardDescription>Review answers for "{gameSession?.currentLetter}"</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {['name', 'place', 'animal', 'thing'].map(cat => (
+              <div key={cat} className="flex items-center justify-between p-4 bg-muted/30 rounded-2xl border">
+                <div>
+                  <p className="text-xs uppercase font-bold text-muted-foreground">{cat}</p>
+                  <p className="text-xl font-bold">{localAnswers[cat as keyof RoundAnswers] || '—'}</p>
+                </div>
+                <div className="flex gap-2">
+                  <Button 
+                    size="icon" 
+                    variant={manualValidation[cat] ? 'default' : 'outline'}
+                    className={manualValidation[cat] ? 'bg-green-500 hover:bg-green-600' : ''}
+                    onClick={() => setManualValidation({...manualValidation, [cat]: true})}
+                  >
+                    <ShieldCheck className="w-5 h-5" />
+                  </Button>
+                  <Button 
+                    size="icon" 
+                    variant={!manualValidation[cat] ? 'destructive' : 'outline'}
+                    onClick={() => setManualValidation({...manualValidation, [cat]: false})}
+                  >
+                    <ShieldAlert className="w-5 h-5" />
+                  </Button>
+                </div>
+              </div>
+            ))}
+            
+            {mode !== 'GUEST' ? (
+              <Button className="w-full h-12 mt-4 bg-primary rounded-xl font-bold" onClick={finalizeManualValidation}>
+                Confirm Scores
+              </Button>
+            ) : (
+              <p className="text-center animate-pulse text-muted-foreground">Waiting for Host to validate...</p>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
       {status === 'ROUND_RESULT' && (
         <div className="w-full max-w-3xl space-y-6 overflow-y-auto max-h-[90vh] pb-8">
           <Card className="bg-card border-2 border-primary/10 overflow-hidden shadow-2xl">
@@ -457,15 +534,22 @@ export default function Home() {
                </div>
 
                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {['name', 'place', 'animal', 'thing'].map(cat => (
-                    <div key={cat} className="p-4 rounded-2xl bg-muted/30 border-2 border-primary/5 flex items-center justify-between">
-                       <div>
-                          <p className="text-xs uppercase font-bold text-muted-foreground mb-1">{cat}</p>
-                          <p className="text-xl font-bold">{localAnswers[cat as keyof RoundAnswers] || '—'}</p>
-                       </div>
-                       <CheckCircle2 className="w-8 h-8 text-green-500" />
-                    </div>
-                  ))}
+                  {['name', 'place', 'animal', 'thing'].map(cat => {
+                    const isValid = gameSession?.validationMode === 'AI' ? true : manualValidation[cat]; // AI logic is simplified for result view
+                    return (
+                      <div key={cat} className="p-4 rounded-2xl bg-muted/30 border-2 border-primary/5 flex items-center justify-between">
+                         <div>
+                            <p className="text-xs uppercase font-bold text-muted-foreground mb-1">{cat}</p>
+                            <p className="text-xl font-bold">{localAnswers[cat as keyof RoundAnswers] || '—'}</p>
+                         </div>
+                         {isValid ? (
+                           <CheckCircle2 className="w-8 h-8 text-green-500" />
+                         ) : (
+                           <XCircle className="w-8 h-8 text-destructive" />
+                         )}
+                      </div>
+                    );
+                  })}
                </div>
             </CardContent>
           </Card>
@@ -473,6 +557,7 @@ export default function Home() {
           {mode !== 'GUEST' && (
             <Button className="w-full h-14 text-xl font-bold bg-primary rounded-2xl shadow-xl" onClick={() => {
               setLocalAnswers({ name: '', place: '', animal: '', thing: '' });
+              setManualValidation({ name: true, place: true, animal: true, thing: true });
               setGameTimer(60);
               initiateRound();
             }}>
