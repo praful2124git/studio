@@ -20,7 +20,6 @@ export interface Player {
   score: number;
   lastRoundScore?: number;
   answers?: RoundAnswers;
-  validation?: ValidationResults;
 }
 
 export interface RoundAnswers {
@@ -30,11 +29,12 @@ export interface RoundAnswers {
   thing: string;
 }
 
-export interface ValidationResults {
-  name: { isValid: boolean; reason: string };
-  place: { isValid: boolean; reason: string };
-  animal: { isValid: boolean; reason: string };
-  thing: { isValid: boolean; reason: string };
+export interface Submission {
+  id: string;
+  playerId: string;
+  nickname: string;
+  avatar: string;
+  answers: RoundAnswers;
 }
 
 export interface GameState {

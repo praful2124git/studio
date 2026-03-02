@@ -7,15 +7,30 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
-import { Users, User, Play, LogIn, Trophy, Timer as TimerIcon, Hash, CheckCircle2, XCircle, ArrowRight, Settings, LogOut, ShieldCheck, ShieldAlert, Rocket, Globe } from 'lucide-react';
-import { GameStatus, Player, GameMode, GameState, RoundAnswers } from '@/lib/game-types';
+import { 
+  Users, User, Play, LogIn, Trophy, Timer as TimerIcon, 
+  CheckCircle2, XCircle, ArrowRight, Settings, LogOut, 
+  ShieldCheck, ShieldAlert, Rocket, Globe, Copy, ChevronLeft, ChevronRight 
+} from 'lucide-react';
+import { GameStatus, Player, GameMode, GameState, RoundAnswers, Submission } from '@/lib/game-types';
 import { validateAnswers } from '@/ai/flows/ai-answer-validation-flow';
-import { useUser, useFirestore, useDoc, useMemoFirebase, setDocumentNonBlocking, updateDocumentNonBlocking, initiateAnonymousSignIn } from '@/firebase';
-import { doc } from 'firebase/firestore';
+import { 
+  useUser, useFirestore, useDoc, useMemoFirebase, useCollection,
+  setDocumentNonBlocking, updateDocumentNonBlocking, initiateAnonymousSignIn 
+} from '@/firebase';
+import { doc, collection } from 'firebase/firestore';
 import { signOut } from 'firebase/auth';
 import { useAuth } from '@/firebase';
+import {
+  Carousel,
+  CarouselContent,
+  CarouselItem,
+  CarouselNext,
+  CarouselPrevious,
+} from "@/components/ui/carousel";
 
 const AVATARS = ['🐶', '🐱', '🐭', '🐹', '🐰', '🦊', '🐻', '🐼', '🐨', '🐯', '🦁', '🐮', '🐷', '🐸', '🐵'];
+const CATEGORIES = ['Name', 'Place', 'Animal', 'Thing'];
 
 export default function Home() {
   const { toast } = useToast();
@@ -39,12 +54,8 @@ export default function Home() {
     thing: '',
   });
 
-  const [manualValidation, setManualValidation] = useState<{ [key: string]: boolean }>({
-    name: true,
-    place: true,
-    animal: true,
-    thing: true,
-  });
+  // Host-only validation state for all players
+  const [hostValidation, setHostValidation] = useState<{ [playerId: string]: { [category: string]: 'correct' | 'duplicate' | 'wrong' } }>({});
 
   // Firestore Data Hooks
   const playerProfileRef = useMemoFirebase(() => user ? doc(db, 'player_profiles', user.uid) : null, [db, user]);
@@ -52,6 +63,9 @@ export default function Home() {
 
   const gameSessionRef = useMemoFirebase(() => (user && roomCode) ? doc(db, 'game_sessions', roomCode) : null, [db, user, roomCode]);
   const { data: gameSession } = useDoc<GameState>(gameSessionRef);
+
+  const submissionsRef = useMemoFirebase(() => roomCode ? collection(db, 'game_sessions', roomCode, 'submissions') : null, [db, roomCode]);
+  const { data: submissions } = useCollection<Submission>(submissionsRef);
 
   // Sync profile locally if it exists
   useEffect(() => {
@@ -63,7 +77,7 @@ export default function Home() {
 
   // Handle room joining and game status synchronization
   useEffect(() => {
-    if (gameSession && status !== 'MENU' && status !== 'PROFILE') {
+    if (gameSession && user) {
       if (gameSession.status !== status) {
         setStatus(gameSession.status);
         
@@ -76,13 +90,13 @@ export default function Home() {
         }
       }
     }
-  }, [gameSession, status]);
+  }, [gameSession, status, user]);
 
-  // Handle automatic answer clearing for new rounds
+  // Reset local state for new rounds
   useEffect(() => {
     if (gameSession?.status === 'COUNTDOWN') {
       setLocalAnswers({ name: '', place: '', animal: '', thing: '' });
-      setManualValidation({ name: true, place: true, animal: true, thing: true });
+      setHostValidation({});
       setGameTimer(60);
     }
   }, [gameSession?.status]);
@@ -144,10 +158,7 @@ export default function Home() {
       setDocumentNonBlocking(doc(db, 'player_profiles', user.uid), pData, { merge: true });
 
       if (mode === 'HOST' || mode === 'SINGLE') {
-        const code = mode === 'SINGLE' 
-          ? 'SOLO-' + user.uid.substring(0, 4)
-          : Math.floor(1000 + Math.random() * 9000).toString();
-        
+        const code = Math.floor(1000 + Math.random() * 9000).toString();
         setRoomCode(code);
         
         const initialSession: GameState = {
@@ -176,7 +187,7 @@ export default function Home() {
       return;
     }
     setRoomCode(inputCode);
-    setStatus('PROFILE'); // Guests set their profile AFTER entering a code
+    setStatus('PROFILE');
   };
 
   const initiateRound = () => {
@@ -224,6 +235,18 @@ export default function Home() {
   }, [status, gameTimer]);
 
   const handleStop = () => {
+    if (!user || !roomCode) return;
+
+    // Submit answers
+    const subRef = doc(db, 'game_sessions', roomCode, 'submissions', user.uid);
+    setDocumentNonBlocking(subRef, {
+      id: user.uid,
+      playerId: user.uid,
+      nickname: profile?.nickname || nickname,
+      avatar: profile?.avatar || avatar,
+      answers: localAnswers
+    }, { merge: true });
+
     const activeValidationMode = gameSession?.validationMode || validationMode;
     const nextStatus = activeValidationMode === 'AI' ? 'VALIDATING' : 'MANUAL_VALIDATION';
     
@@ -233,24 +256,39 @@ export default function Home() {
   };
 
   const finalizeManualValidation = () => {
-    let roundScore = 0;
-    const cats: (keyof RoundAnswers)[] = ['name', 'place', 'animal', 'thing'];
-    cats.forEach(cat => {
-      if (manualValidation[cat]) roundScore += 10;
+    if (!gameSession || !submissions) return;
+
+    const updatedPlayers = gameSession.players.map(p => {
+      let roundScore = 0;
+      const playerVals = hostValidation[p.id] || {};
+      
+      CATEGORIES.forEach(cat => {
+        const status = playerVals[cat.toLowerCase()];
+        if (status === 'correct') roundScore += 10;
+        if (status === 'duplicate') roundScore += 5;
+      });
+
+      return {
+        ...p,
+        score: (p.score || 0) + roundScore,
+        lastRoundScore: roundScore
+      };
     });
 
-    const updatedScore = (profile?.score || 0) + roundScore;
-    
-    if (user) {
-      updateDocumentNonBlocking(doc(db, 'player_profiles', user.uid), {
-        score: updatedScore,
-        lastRoundScore: roundScore
+    if (gameSessionRef) {
+      updateDocumentNonBlocking(gameSessionRef, { 
+        status: 'ROUND_RESULT',
+        players: updatedPlayers
       });
     }
-
-    if (gameSessionRef && (mode === 'HOST' || mode === 'SINGLE')) {
-      updateDocumentNonBlocking(gameSessionRef, { status: 'ROUND_RESULT' });
-    }
+    
+    // Also update individual profile docs for persistence
+    updatedPlayers.forEach(up => {
+      updateDocumentNonBlocking(doc(db, 'player_profiles', up.id), {
+        score: up.score,
+        lastRoundScore: up.lastRoundScore
+      });
+    });
   };
 
   const runAIValidation = async () => {
@@ -281,6 +319,15 @@ export default function Home() {
           score: updatedScore,
           lastRoundScore: roundScore
         });
+        
+        // Update players array in session for scoreboard
+        if (gameSessionRef) {
+          const updatedPlayers = gameSession.players.map(p => {
+            if (p.id === user.uid) return { ...p, score: updatedScore, lastRoundScore: roundScore };
+            return p;
+          });
+          updateDocumentNonBlocking(gameSessionRef, { players: updatedPlayers });
+        }
       }
 
       if (gameSessionRef && (mode === 'HOST' || mode === 'SINGLE')) {
@@ -295,6 +342,8 @@ export default function Home() {
   };
 
   if (isUserLoading) return <div className="min-h-screen flex items-center justify-center">Loading LetterLink...</div>;
+
+  const sortedPlayers = gameSession?.players ? [...gameSession.players].sort((a, b) => b.score - a.score) : [];
 
   return (
     <div className="min-h-screen p-4 flex flex-col items-center justify-center font-body text-foreground">
@@ -346,7 +395,7 @@ export default function Home() {
                   <span className="text-2xl">{profile.avatar}</span>
                   <span className="font-bold">{profile.nickname}</span>
                 </div>
-                <Badge variant="outline" className="text-accent font-bold">Score: {profile.score}</Badge>
+                <Badge variant="outline" className="text-accent font-bold">Total: {profile.score}</Badge>
               </div>
             )}
           </CardContent>
@@ -452,7 +501,7 @@ export default function Home() {
               ))}
             </div>
             
-            {mode !== 'GUEST' ? (
+            {gameSession?.hostPlayerId === user?.uid ? (
               <Button className="w-full h-14 text-xl font-bold bg-primary hover:bg-primary/90 rounded-2xl shadow-xl" onClick={initiateRound}>
                 Start Game <Play className="ml-2 w-6 h-6" />
               </Button>
@@ -494,13 +543,12 @@ export default function Home() {
           </div>
 
           <div className="grid gap-4 md:grid-cols-2">
-            {['Name', 'Place', 'Animal', 'Thing'].map(cat => (
+            {CATEGORIES.map(cat => (
               <div key={cat} className="space-y-2 group">
                 <label className="text-sm font-black uppercase tracking-widest ml-1 text-primary/80">{cat}</label>
                 <Input 
                   placeholder={`Type a ${cat}...`}
                   className="h-16 text-2xl font-bold px-6 rounded-2xl shadow-md border-2 group-focus-within:border-accent transition-all bg-card"
-                  autoFocus={cat === 'Name'}
                   value={localAnswers[cat.toLowerCase() as keyof RoundAnswers]}
                   onChange={(e) => setLocalAnswers({...localAnswers, [cat.toLowerCase()]: e.target.value})}
                 />
@@ -525,46 +573,92 @@ export default function Home() {
       )}
 
       {status === 'MANUAL_VALIDATION' && (
-        <Card className="w-full max-w-md border-2 border-primary/20 shadow-2xl bg-card rounded-3xl overflow-hidden">
+        <Card className="w-full max-w-4xl border-2 border-primary/20 shadow-2xl bg-card rounded-3xl overflow-hidden">
           <CardHeader className="text-center bg-primary/10 py-6">
-            <CardTitle className="text-2xl font-black">Manual Review</CardTitle>
+            <CardTitle className="text-2xl font-black">Manual Validation</CardTitle>
             <CardDescription className="font-bold">Letter: "{gameSession?.currentLetter}"</CardDescription>
           </CardHeader>
-          <CardContent className="space-y-4 p-6">
-            {['name', 'place', 'animal', 'thing'].map(cat => (
-              <div key={cat} className="flex items-center justify-between p-4 bg-muted/30 rounded-2xl border-2 transition-all hover:bg-muted/50">
-                <div>
-                  <p className="text-xs uppercase font-black text-primary/60 tracking-widest">{cat}</p>
-                  <p className="text-xl font-black">{localAnswers[cat as keyof RoundAnswers] || '—'}</p>
-                </div>
-                <div className="flex gap-2">
-                  <Button 
-                    size="icon" 
-                    variant={manualValidation[cat] ? 'default' : 'outline'}
-                    className={`rounded-xl h-12 w-12 ${manualValidation[cat] ? 'bg-green-500 hover:bg-green-600 shadow-md' : ''}`}
-                    onClick={() => setManualValidation({...manualValidation, [cat]: true})}
-                  >
-                    <ShieldCheck className="w-6 h-6" />
-                  </Button>
-                  <Button 
-                    size="icon" 
-                    variant={!manualValidation[cat] ? 'destructive' : 'outline'}
-                    className={`rounded-xl h-12 w-12 ${!manualValidation[cat] ? 'shadow-md' : ''}`}
-                    onClick={() => setManualValidation({...manualValidation, [cat]: false})}
-                  >
-                    <ShieldAlert className="w-6 h-6" />
-                  </Button>
-                </div>
+          <CardContent className="p-6">
+            {gameSession?.hostPlayerId === user?.uid ? (
+              <div className="space-y-6">
+                <Carousel className="w-full">
+                  <CarouselContent>
+                    {CATEGORIES.map(cat => (
+                      <CarouselItem key={cat}>
+                        <div className="p-4 bg-muted/20 rounded-3xl border-2 border-primary/10">
+                          <h3 className="text-2xl font-black text-primary text-center mb-6 uppercase tracking-widest">{cat}</h3>
+                          <div className="space-y-3">
+                            {submissions?.map(sub => {
+                              const answer = sub.answers[cat.toLowerCase() as keyof RoundAnswers];
+                              const currentVal = hostValidation[sub.playerId]?.[cat.toLowerCase()];
+                              
+                              return (
+                                <div key={sub.id} className="flex items-center justify-between p-4 bg-card rounded-2xl border shadow-sm">
+                                  <div className="flex items-center gap-3">
+                                    <span className="text-2xl">{sub.avatar}</span>
+                                    <div>
+                                      <p className="text-xs font-bold text-muted-foreground">{sub.nickname}</p>
+                                      <p className="text-xl font-black">{answer || '—'}</p>
+                                    </div>
+                                  </div>
+                                  <div className="flex gap-2">
+                                    <Button 
+                                      size="icon" 
+                                      variant={currentVal === 'correct' ? 'default' : 'outline'}
+                                      className={`rounded-xl h-10 w-10 ${currentVal === 'correct' ? 'bg-green-500' : ''}`}
+                                      onClick={() => setHostValidation(prev => ({
+                                        ...prev,
+                                        [sub.playerId]: { ...prev[sub.playerId], [cat.toLowerCase()]: 'correct' }
+                                      }))}
+                                    >
+                                      <ShieldCheck className="w-5 h-5" />
+                                    </Button>
+                                    <Button 
+                                      size="icon" 
+                                      variant={currentVal === 'duplicate' ? 'default' : 'outline'}
+                                      className={`rounded-xl h-10 w-10 ${currentVal === 'duplicate' ? 'bg-accent' : ''}`}
+                                      onClick={() => setHostValidation(prev => ({
+                                        ...prev,
+                                        [sub.playerId]: { ...prev[sub.playerId], [cat.toLowerCase()]: 'duplicate' }
+                                      }))}
+                                    >
+                                      <Copy className="w-5 h-5" />
+                                    </Button>
+                                    <Button 
+                                      size="icon" 
+                                      variant={currentVal === 'wrong' ? 'destructive' : 'outline'}
+                                      className="rounded-xl h-10 w-10"
+                                      onClick={() => setHostValidation(prev => ({
+                                        ...prev,
+                                        [sub.playerId]: { ...prev[sub.playerId], [cat.toLowerCase()]: 'wrong' }
+                                      }))}
+                                    >
+                                      <ShieldAlert className="w-5 h-5" />
+                                    </Button>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </CarouselItem>
+                    ))}
+                  </CarouselContent>
+                  <div className="flex justify-center gap-4 mt-6">
+                    <CarouselPrevious className="relative translate-y-0" />
+                    <CarouselNext className="relative translate-y-0" />
+                  </div>
+                </Carousel>
+                
+                <Button className="w-full h-16 bg-primary rounded-2xl font-black text-xl shadow-lg mt-6" onClick={finalizeManualValidation}>
+                  Finalize & Show Leaderboard
+                </Button>
               </div>
-            ))}
-            
-            {mode !== 'GUEST' ? (
-              <Button className="w-full h-14 mt-6 bg-primary rounded-2xl font-black text-xl shadow-lg" onClick={finalizeManualValidation}>
-                Confirm Scores
-              </Button>
             ) : (
-              <div className="mt-4 p-4 text-center bg-muted/30 rounded-xl border border-dashed animate-pulse">
-                <p className="text-muted-foreground font-black">Waiting for Host to validate...</p>
+              <div className="py-20 text-center animate-pulse">
+                <ShieldCheck className="w-16 h-16 text-primary mx-auto mb-4" />
+                <p className="text-2xl font-black text-primary">Host is validating answers...</p>
+                <p className="text-muted-foreground">Relax, scores are coming soon!</p>
               </div>
             )}
           </CardContent>
@@ -572,65 +666,48 @@ export default function Home() {
       )}
 
       {status === 'ROUND_RESULT' && (
-        <div className="w-full max-w-3xl space-y-6 overflow-y-auto max-h-[90vh] pb-8 animate-in zoom-in duration-300">
+        <div className="w-full max-w-4xl space-y-6 overflow-y-auto max-h-[90vh] pb-8 animate-in zoom-in duration-300">
           <Card className="bg-card border-2 border-primary/10 overflow-hidden shadow-2xl rounded-3xl">
             <CardHeader className="bg-primary text-primary-foreground p-8">
               <div className="flex justify-between items-center">
                 <div>
-                   <p className="text-xs uppercase font-black tracking-widest opacity-80 mb-1">Results</p>
-                   <CardTitle className="text-4xl font-black">Round Summary</CardTitle>
+                   <p className="text-xs uppercase font-black tracking-widest opacity-80 mb-1">Standings</p>
+                   <CardTitle className="text-4xl font-black">Scoreboard</CardTitle>
                 </div>
-                <div className="flex items-center gap-3 bg-white/20 px-6 py-3 rounded-2xl backdrop-blur-md">
-                  <Trophy className="w-8 h-8 text-accent" />
-                  <span className="font-black text-2xl">+{profile?.lastRoundScore || 0}</span>
-                </div>
+                <Trophy className="w-12 h-12 text-accent" />
               </div>
             </CardHeader>
-            <CardContent className="p-8">
-               <div className="flex items-center justify-between mb-10 pb-6 border-b">
-                  <div className="flex items-center gap-6">
-                    <span className="text-7xl drop-shadow-lg">{profile?.avatar}</span>
-                    <div>
-                      <h4 className="text-3xl font-black text-primary">{profile?.nickname}</h4>
-                      <p className="text-muted-foreground font-bold">Total Score: {profile?.score} pts</p>
-                    </div>
-                  </div>
-                  <Badge className="text-2xl py-3 px-8 bg-accent text-white font-black rounded-2xl shadow-lg border-b-4 border-black/20">
-                    {profile?.lastRoundScore || 0} PTS
-                  </Badge>
-               </div>
-
-               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  {['name', 'place', 'animal', 'thing'].map(cat => {
-                    const isValid = gameSession?.validationMode === 'AI' ? true : manualValidation[cat]; 
-                    return (
-                      <div key={cat} className="p-6 rounded-3xl bg-muted/20 border-2 border-primary/5 flex items-center justify-between shadow-sm transition-all hover:scale-[1.02]">
-                         <div>
-                            <p className="text-xs uppercase font-black text-primary/50 tracking-widest mb-2">{cat}</p>
-                            <p className="text-2xl font-black">{localAnswers[cat as keyof RoundAnswers] || '—'}</p>
-                         </div>
-                         {isValid ? (
-                           <div className="bg-green-100 p-3 rounded-2xl border border-green-200 shadow-inner">
-                              <CheckCircle2 className="w-10 h-10 text-green-600" />
-                           </div>
-                         ) : (
-                           <div className="bg-destructive/10 p-3 rounded-2xl border border-destructive/20 shadow-inner">
-                              <XCircle className="w-10 h-10 text-destructive" />
-                           </div>
-                         )}
+            <CardContent className="p-0">
+               <div className="divide-y">
+                  {sortedPlayers.map((p, index) => (
+                    <div key={p.id} className={`flex items-center justify-between p-6 transition-all ${p.id === user?.uid ? 'bg-primary/5' : ''}`}>
+                      <div className="flex items-center gap-6">
+                        <span className="text-3xl font-black text-muted-foreground w-8">#{index + 1}</span>
+                        <span className="text-5xl drop-shadow-md">{p.avatar}</span>
+                        <div>
+                          <h4 className="text-2xl font-black text-primary flex items-center gap-2">
+                            {p.nickname}
+                            {p.id === user?.uid && <Badge variant="outline" className="text-[10px] uppercase">You</Badge>}
+                          </h4>
+                          <p className="text-muted-foreground font-bold">Round Gain: +{p.lastRoundScore || 0} pts</p>
+                        </div>
                       </div>
-                    );
-                  })}
+                      <div className="text-right">
+                        <p className="text-3xl font-black text-primary">{p.score} pts</p>
+                        <p className="text-xs font-black uppercase text-accent tracking-tighter">Total Score</p>
+                      </div>
+                    </div>
+                  ))}
                </div>
             </CardContent>
           </Card>
 
-          {mode !== 'GUEST' ? (
+          {gameSession?.hostPlayerId === user?.uid ? (
             <Button className="w-full h-16 text-2xl font-black bg-primary rounded-3xl shadow-xl border-b-8 border-black/10 active:border-b-0 active:translate-y-1 transition-all" onClick={initiateRound}>
-              Next Round <Play className="ml-2 w-8 h-8" />
+              Start Next Round <Play className="ml-2 w-8 h-8" />
             </Button>
           ) : (
-            <div className="p-4 bg-card/80 rounded-2xl text-center border-2 border-dashed border-primary/20 animate-pulse">
+            <div className="p-6 bg-card/80 rounded-2xl text-center border-2 border-dashed border-primary/20 animate-pulse">
               <p className="font-black text-primary uppercase tracking-widest">Waiting for Host to start next round...</p>
             </div>
           )}
@@ -642,3 +719,4 @@ export default function Home() {
     </div>
   );
 }
+
