@@ -18,10 +18,6 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == userId;
     }
 
-    function isExistingOwner(userId) {
-      return resource != null && isOwner(userId);
-    }
-
     function isHost(hostId) {
       return isSignedIn() && request.auth.uid == hostId;
     }
@@ -31,6 +27,7 @@ service cloud.firestore {
     }
 
     function isSessionMember(gameSessionId) {
+      // Use parent document lookup to verify membership
       return isSignedIn() && getSession(gameSessionId).members.keys().hasAny([request.auth.uid]);
     }
 
@@ -49,7 +46,7 @@ service cloud.firestore {
       allow update: if isHost(resource.data.hostPlayerId) || isSignedIn();
       allow delete: if isHost(resource.data.hostPlayerId);
 
-      // Rule for submissions subcollection - Secured by parent session membership
+      // Submissions secured by parent session membership
       match /submissions/{playerId} {
         allow get, list: if isSessionMember(gameSessionId);
         allow create, update: if isOwner(playerId);

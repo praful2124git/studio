@@ -65,12 +65,17 @@ export default function Home() {
 
   const submissionsRef = useMemoFirebase(() => {
     if (!roomCode || !gameSession || !user) return null;
-    // Filter submissions by current round number to avoid crosstalk and security list issues
+    
+    // CRITICAL: Prevent "Missing or insufficient permissions" by waiting until the guest 
+    // is officially added to the members map in the session document.
+    if (!gameSession.members?.[user.uid]) return null;
+
     return query(
       collection(db, 'game_sessions', roomCode, 'submissions'),
       where('roundCount', '==', gameSession.roundCount)
     );
-  }, [db, roomCode, gameSession?.roundCount, user]);
+  }, [db, roomCode, gameSession?.roundCount, user, gameSession?.members]);
+  
   const { data: submissions } = useCollection<Submission>(submissionsRef);
 
   useEffect(() => {
@@ -105,7 +110,7 @@ export default function Home() {
   }, [gameSession?.status]);
 
   useEffect(() => {
-    if (gameSession && mode === 'GUEST' && user && profile && !gameSession.members[user.uid]) {
+    if (gameSession && mode === 'GUEST' && user && profile && !gameSession.members?.[user.uid]) {
       const updatedMembers = { ...gameSession.members, [user.uid]: true };
       const guestPlayer: Player = {
         id: user.uid,
