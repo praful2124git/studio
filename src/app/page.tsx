@@ -99,10 +99,10 @@ export default function Home() {
     }, { merge: true });
   }, [user, roomCode, gameSession, profile, nickname, avatar, localAnswers, db]);
 
+  // Handle game state transitions and remote triggers
   useEffect(() => {
     if (gameSession && user) {
       if (gameSession.status !== status) {
-        // Status changed remotely
         const oldStatus = status;
         setStatus(gameSession.status);
         
@@ -122,6 +122,19 @@ export default function Home() {
     }
   }, [gameSession, status, user, submitLocalAnswers]);
 
+  // Sync session scores to global profile (Safe: only owner updates own doc)
+  useEffect(() => {
+    if (gameSession?.status === 'ROUND_RESULT' && user && gameSession.players) {
+      const meInSession = gameSession.players.find(p => p.id === user.uid);
+      if (meInSession && profile && meInSession.score !== profile.score) {
+        updateDocumentNonBlocking(doc(db, 'player_profiles', user.uid), {
+          score: meInSession.score,
+          lastRoundScore: meInSession.lastRoundScore
+        });
+      }
+    }
+  }, [gameSession?.status, gameSession?.players, user, profile, db]);
+
   useEffect(() => {
     if (gameSession?.status === 'COUNTDOWN') {
       setLocalAnswers({ name: '', place: '', animal: '', thing: '' });
@@ -130,11 +143,11 @@ export default function Home() {
     }
   }, [gameSession?.status]);
 
-  // Guest joining logic - ensure it only runs once per join
+  // Guest joining logic
   useEffect(() => {
-    if (gameSession && mode === 'GUEST' && user && profile && status === 'LOBBY') {
+    if (gameSession && mode === 'GUEST' && user && profile && (status === 'LOBBY' || status === 'PROFILE')) {
       const alreadyJoined = gameSession.members?.[user.uid];
-      if (!alreadyJoined) {
+      if (!alreadyJoined && status === 'LOBBY') {
         const updatedMembers = { ...gameSession.members, [user.uid]: true };
         const guestPlayer: Player = {
           id: user.uid,
@@ -276,11 +289,8 @@ export default function Home() {
 
   const handleStop = () => {
     if (!user || !roomCode || !gameSession) return;
-
-    // 1. Trigger submission for current user (others triggered by status listener)
     submitLocalAnswers();
 
-    // 2. Trigger round end for EVERYONE
     const activeValidationMode = gameSession?.validationMode || validationMode;
     const nextStatus = activeValidationMode === 'AI' ? 'VALIDATING' : 'MANUAL_VALIDATION';
     
@@ -315,13 +325,7 @@ export default function Home() {
         players: updatedPlayers
       });
     }
-    
-    updatedPlayers.forEach(up => {
-      updateDocumentNonBlocking(doc(db, 'player_profiles', up.id), {
-        score: up.score,
-        lastRoundScore: up.lastRoundScore
-      });
-    });
+    // Individual profile updates are handled by the players themselves via the useEffect listener
   };
 
   const runAIValidation = async () => {
@@ -338,9 +342,8 @@ export default function Home() {
       });
 
       let roundScore = 0;
-      const cats: (keyof RoundAnswers)[] = ['name', 'place', 'animal', 'thing'];
-      cats.forEach(cat => {
-        const valKey = `${cat}Validation` as keyof typeof result;
+      CATEGORIES.forEach(cat => {
+        const valKey = `${cat.toLowerCase()}Validation` as keyof typeof result;
         const val = result[valKey] as any;
         if (val?.isValid) roundScore += 10;
       });
@@ -353,10 +356,8 @@ export default function Home() {
           lastRoundScore: roundScore
         });
         
-        // Host updates the session player list so others can see their score
         if (gameSessionRef && (mode === 'HOST' || mode === 'SINGLE')) {
           setTimeout(() => {
-            // Update session with final results after allowing time for others to validate
             const latestPlayers = gameSession.players.map(p => {
               if (p.id === user.uid) return { ...p, score: updatedScore, lastRoundScore: roundScore };
               return p;
@@ -365,7 +366,7 @@ export default function Home() {
               status: 'ROUND_RESULT',
               players: latestPlayers
             });
-          }, 5000);
+          }, 3000);
         }
       }
     } catch (e) {
