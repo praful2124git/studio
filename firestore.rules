@@ -27,8 +27,9 @@ service cloud.firestore {
     }
 
     function isSessionMember(gameSessionId) {
-      // Use parent document lookup to verify membership
-      return isSignedIn() && getSession(gameSessionId).members.keys().hasAny([request.auth.uid]);
+      // Use parent document lookup to verify membership via map key existence
+      let session = get(/databases/$(database)/documents/game_sessions/$(gameSessionId)).data;
+      return isSignedIn() && session.members[request.auth.uid] == true;
     }
 
     // --- Collection Rules ---
@@ -48,6 +49,7 @@ service cloud.firestore {
 
       // Submissions secured by parent session membership
       match /submissions/{playerId} {
+        // Explicitly allow list/get if the user is part of the session
         allow get, list: if isSessionMember(gameSessionId);
         allow create, update: if isOwner(playerId);
         allow delete: if isOwner(playerId) || isHost(getSession(gameSessionId).hostPlayerId);

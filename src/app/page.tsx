@@ -63,12 +63,13 @@ export default function Home() {
   const gameSessionRef = useMemoFirebase(() => (user && roomCode) ? doc(db, 'game_sessions', roomCode) : null, [db, user, roomCode]);
   const { data: gameSession } = useDoc<GameState>(gameSessionRef);
 
+  // Submissions listener - critical to wait until membership is server-confirmed
   const submissionsRef = useMemoFirebase(() => {
     if (!roomCode || !gameSession || !user) return null;
     
-    // CRITICAL: Prevent "Missing or insufficient permissions" by waiting until the guest 
-    // is officially added to the members map in the session document.
-    if (!gameSession.members?.[user.uid]) return null;
+    // Only subscribe if the current user is confirmed as a member in the session document
+    // This prevents "Missing or insufficient permissions" errors during the join race condition
+    if (!gameSession.members || !gameSession.members[user.uid]) return null;
 
     return query(
       collection(db, 'game_sessions', roomCode, 'submissions'),
@@ -109,6 +110,7 @@ export default function Home() {
     }
   }, [gameSession?.status]);
 
+  // Guest joining logic
   useEffect(() => {
     if (gameSession && mode === 'GUEST' && user && profile && !gameSession.members?.[user.uid]) {
       const updatedMembers = { ...gameSession.members, [user.uid]: true };
