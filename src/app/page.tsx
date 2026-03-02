@@ -18,7 +18,7 @@ import {
   useUser, useFirestore, useDoc, useMemoFirebase, useCollection,
   setDocumentNonBlocking, updateDocumentNonBlocking, initiateAnonymousSignIn 
 } from '@/firebase';
-import { doc, collection } from 'firebase/firestore';
+import { doc, collection, query, where } from 'firebase/firestore';
 import { signOut } from 'firebase/auth';
 import { useAuth } from '@/firebase';
 import {
@@ -64,7 +64,14 @@ export default function Home() {
   const gameSessionRef = useMemoFirebase(() => (user && roomCode) ? doc(db, 'game_sessions', roomCode) : null, [db, user, roomCode]);
   const { data: gameSession } = useDoc<GameState>(gameSessionRef);
 
-  const submissionsRef = useMemoFirebase(() => roomCode ? collection(db, 'game_sessions', roomCode, 'submissions') : null, [db, roomCode]);
+  const submissionsRef = useMemoFirebase(() => {
+    if (!roomCode || !gameSession) return null;
+    // Filter submissions by current round number to avoid crosstalk
+    return query(
+      collection(db, 'game_sessions', roomCode, 'submissions'),
+      where('roundCount', '==', gameSession.roundCount)
+    );
+  }, [db, roomCode, gameSession?.roundCount]);
   const { data: submissions } = useCollection<Submission>(submissionsRef);
 
   // Sync profile locally if it exists
@@ -235,7 +242,7 @@ export default function Home() {
   }, [status, gameTimer]);
 
   const handleStop = () => {
-    if (!user || !roomCode) return;
+    if (!user || !roomCode || !gameSession) return;
 
     // Submit answers
     const subRef = doc(db, 'game_sessions', roomCode, 'submissions', user.uid);
@@ -244,7 +251,10 @@ export default function Home() {
       playerId: user.uid,
       nickname: profile?.nickname || nickname,
       avatar: profile?.avatar || avatar,
-      answers: localAnswers
+      answers: localAnswers,
+      roundCount: gameSession.roundCount,
+      members: gameSession.members, // Denormalize members for list security
+      hostPlayerId: gameSession.hostPlayerId
     }, { merge: true });
 
     const activeValidationMode = gameSession?.validationMode || validationMode;
@@ -719,4 +729,3 @@ export default function Home() {
     </div>
   );
 }
-

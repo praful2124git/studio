@@ -1,387 +1,61 @@
+
 {
   "entities": {
     "PlayerProfile": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
       "title": "PlayerProfile",
       "type": "object",
-      "description": "Represents a player's profile, including their chosen nickname and avatar.",
+      "description": "Represents a player's profile.",
       "properties": {
-        "id": {
-          "type": "string",
-          "description": "Unique identifier for the PlayerProfile entity."
-        },
-        "nickname": {
-          "type": "string",
-          "description": "The player's chosen display name."
-        },
-        "avatarEmoji": {
-          "type": "string",
-          "description": "The emoji selected by the player to represent their avatar."
-        }
+        "id": { "type": "string" },
+        "nickname": { "type": "string" },
+        "avatar": { "type": "string" },
+        "score": { "type": "number" }
       },
-      "required": [
-        "id",
-        "nickname",
-        "avatarEmoji"
-      ]
+      "required": ["id", "nickname", "avatar"]
     },
     "GameSession": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
       "title": "GameSession",
       "type": "object",
-      "description": "Represents an ongoing game session, including its configuration, players, and current state. For multiplayer, the host manages this session.",
+      "description": "Represents an ongoing game session.",
       "properties": {
-        "id": {
-          "type": "string",
-          "description": "Unique identifier for the GameSession entity, often a 4-digit room code for multiplayer games."
-        },
-        "hostPlayerId": {
-          "type": "string",
-          "description": "Reference to the PlayerProfile who created and is hosting this game session. (Relationship: PlayerProfile 1:N GameSession)"
-        },
-        "status": {
-          "type": "string",
-          "description": "The current state of the game session.",
-          "format": "enum",
-          "items": {
-            "type": "string"
-          }
-        },
-        "targetLetter": {
-          "type": "string",
-          "description": "The current target letter for the round (e.g., 'M')."
-        },
-        "roundDurationSeconds": {
-          "type": "number",
-          "description": "The configured duration in seconds for each game round."
-        },
-        "validationMode": {
-          "type": "string",
-          "description": "Determines whether answers are validated by AI or manually by the host. (Addresses user's implied requirement for a mode distinction).",
-          "format": "enum",
-          "items": {
-            "type": "string"
-          }
-        },
-        "createdAt": {
-          "type": "string",
-          "description": "Timestamp when the game session was created.",
-          "format": "date-time"
-        },
-        "playerIds": {
-          "type": "array",
-          "description": "An array of IDs of all players currently participating in this game session. (Relationship: PlayerProfile N:N GameSession)",
-          "items": {
-            "type": "string"
-          }
-        },
-        "currentRoundNumber": {
-          "type": "number",
-          "description": "The sequential number of the current round within the game session."
-        },
-        "totalRounds": {
-          "type": "number",
-          "description": "The total number of rounds planned for this game session."
-        }
-      },
-      "required": [
-        "id",
-        "hostPlayerId",
-        "status",
-        "targetLetter",
-        "roundDurationSeconds",
-        "validationMode",
-        "createdAt",
-        "playerIds",
-        "currentRoundNumber",
-        "totalRounds"
-      ]
+        "id": { "type": "string" },
+        "hostPlayerId": { "type": "string" },
+        "status": { "type": "string" },
+        "currentLetter": { "type": "string" },
+        "roundCount": { "type": "number" },
+        "members": { "type": "object" },
+        "players": { "type": "array" }
+      }
     },
-    "GameRound": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "GameRound",
+    "Submission": {
+      "title": "Submission",
       "type": "object",
-      "description": "Represents a single round within a game session, capturing its specific details and associated submissions.",
+      "description": "A player's round answers.",
       "properties": {
-        "id": {
-          "type": "string",
-          "description": "Unique identifier for the GameRound entity."
-        },
-        "gameSessionId": {
-          "type": "string",
-          "description": "Reference to the GameSession this round belongs to. (Relationship: GameSession 1:N GameRound)"
-        },
-        "roundNumber": {
-          "type": "number",
-          "description": "The sequential number of this round within its game session."
-        },
-        "targetLetter": {
-          "type": "string",
-          "description": "The specific target letter assigned for this round."
-        },
-        "startTime": {
-          "type": "string",
-          "description": "Timestamp when the round officially started.",
-          "format": "date-time"
-        },
-        "endTime": {
-          "type": "string",
-          "description": "Timestamp when the round officially ended (e.g., timer expired or all players submitted).",
-          "format": "date-time"
-        },
-        "playerSubmissionIds": {
-          "type": "array",
-          "description": "An array of IDs for all PlayerSubmission entities made during this round. (Relationship: PlayerSubmission 1:N GameRound)",
-          "items": {
-            "type": "string"
-          }
-        }
-      },
-      "required": [
-        "id",
-        "gameSessionId",
-        "roundNumber",
-        "targetLetter",
-        "startTime",
-        "endTime"
-      ]
-    },
-    "PlayerSubmission": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "PlayerSubmission",
-      "type": "object",
-      "description": "Captures a single player's answers (Name, Place, Thing) for a specific game round.",
-      "properties": {
-        "id": {
-          "type": "string",
-          "description": "Unique identifier for the PlayerSubmission entity."
-        },
-        "gameRoundId": {
-          "type": "string",
-          "description": "Reference to the GameRound this submission belongs to. (Relationship: GameRound 1:N PlayerSubmission)"
-        },
-        "playerId": {
-          "type": "string",
-          "description": "Reference to the PlayerProfile who made this submission. (Relationship: PlayerProfile 1:N PlayerSubmission)"
-        },
-        "nameAnswer": {
-          "type": "string",
-          "description": "The word submitted for the 'Name' category."
-        },
-        "placeAnswer": {
-          "type": "string",
-          "description": "The word submitted for the 'Place' category."
-        },
-        "thingAnswer": {
-          "type": "string",
-          "description": "The word submitted for the 'Thing' category."
-        },
-        "submittedAt": {
-          "type": "string",
-          "description": "Timestamp when this submission was made.",
-          "format": "date-time"
-        },
-        "answerValidationResultIds": {
-          "type": "array",
-          "description": "An array of IDs referencing the AnswerValidationResult entities for each category in this submission. (Relationship: PlayerSubmission 1:N AnswerValidationResult)",
-          "items": {
-            "type": "string"
-          }
-        }
-      },
-      "required": [
-        "id",
-        "gameRoundId",
-        "playerId",
-        "nameAnswer",
-        "placeAnswer",
-        "thingAnswer",
-        "submittedAt"
-      ]
-    },
-    "AnswerValidationResult": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "AnswerValidationResult",
-      "type": "object",
-      "description": "Stores the validation outcome and scoring for a single answer (Name, Place, or Thing) from a player's submission.",
-      "properties": {
-        "id": {
-          "type": "string",
-          "description": "Unique identifier for the AnswerValidationResult entity."
-        },
-        "playerSubmissionId": {
-          "type": "string",
-          "description": "Reference to the PlayerSubmission this result validates. (Relationship: PlayerSubmission 1:N AnswerValidationResult)"
-        },
-        "category": {
-          "type": "string",
-          "description": "The category of the answer validated (e.g., 'Name', 'Place', 'Thing').",
-          "format": "enum",
-          "items": {
-            "type": "string"
-          }
-        },
-        "submittedWord": {
-          "type": "string",
-          "description": "The specific word that was submitted and validated."
-        },
-        "isValid": {
-          "type": "boolean",
-          "description": "Indicates whether the submitted word was considered valid for its category and target letter."
-        },
-        "isUnique": {
-          "type": "boolean",
-          "description": "Indicates whether the submitted word was unique among all valid answers for that category in the round."
-        },
-        "pointsAwarded": {
-          "type": "number",
-          "description": "The points awarded for this specific answer (0, 5 for duplicate valid, 10 for unique valid)."
-        },
-        "validationMethod": {
-          "type": "string",
-          "description": "The method used for validation ('AI' or 'Human').",
-          "format": "enum",
-          "items": {
-            "type": "string"
-          }
-        },
-        "validatorPlayerId": {
-          "type": "string",
-          "description": "Reference to the PlayerProfile who performed the validation, if 'Human' mode is used. (Relationship: PlayerProfile 1:N AnswerValidationResult)",
-          "items": {
-            "type": "string"
-          }
-        },
-        "validationDetails": {
-          "type": "string",
-          "description": "Optional details or reasons for the validation outcome (e.g., 'Does not start with target letter', 'Not a valid place')."
-        }
-      },
-      "required": [
-        "id",
-        "playerSubmissionId",
-        "category",
-        "submittedWord",
-        "isValid",
-        "isUnique",
-        "pointsAwarded",
-        "validationMethod"
-      ]
+        "id": { "type": "string" },
+        "playerId": { "type": "string" },
+        "answers": { "type": "object" },
+        "roundCount": { "type": "number" },
+        "members": { "type": "object" },
+        "hostPlayerId": { "type": "string" }
+      }
     }
   },
   "auth": {
-    "providers": [
-      "password",
-      "anonymous"
-    ]
+    "providers": ["anonymous"]
   },
   "firestore": {
-    "structure": [
-      {
-        "path": "/player_profiles/{playerId}",
-        "definition": {
-          "entityName": "PlayerProfile",
-          "schema": {
-            "$ref": "#/backend/entities/PlayerProfile"
-          },
-          "description": "Stores individual player profile information, accessible by the player themselves for writes, and publicly readable by other authenticated users for display in game contexts.",
-          "params": [
-            {
-              "name": "playerId",
-              "description": "The unique identifier of the player, which should match Firebase Authentication UID."
-            }
-          ]
-        }
-      },
-      {
-        "path": "/game_sessions/{gameSessionId}",
-        "definition": {
-          "entityName": "GameSession",
-          "schema": {
-            "$ref": "#/backend/entities/GameSession"
-          },
-          "description": "Represents an active or pending game session. Includes denormalized 'hostPlayerId' and a 'members' map for direct authorization checks for itself and its subcollections. The 'playerIds' array from the schema should be kept in sync with the 'members' map for client-side use.",
-          "params": [
-            {
-              "name": "gameSessionId",
-              "description": "The unique identifier for the game session, often a 4-digit room code."
-            }
-          ]
-        }
-      },
-      {
-        "path": "/game_sessions/{gameSessionId}/game_rounds/{gameRoundId}",
-        "definition": {
-          "entityName": "GameRound",
-          "schema": {
-            "$ref": "#/backend/entities/GameRound"
-          },
-          "description": "Represents a single round within a game session. Includes denormalized 'gameSessionId', 'hostPlayerId', and 'members' map (copied from the parent GameSession) for authorization independence. All players in 'members' can read.",
-          "params": [
-            {
-              "name": "gameSessionId",
-              "description": "The unique identifier of the parent game session."
-            },
-            {
-              "name": "gameRoundId",
-              "description": "The unique identifier for this specific game round."
-            }
-          ]
-        }
-      },
-      {
-        "path": "/game_sessions/{gameSessionId}/game_rounds/{gameRoundId}/player_submissions/{playerSubmissionId}",
-        "definition": {
-          "entityName": "PlayerSubmission",
-          "schema": {
-            "$ref": "#/backend/entities/PlayerSubmission"
-          },
-          "description": "Captures a single player's answers for a game round. Includes denormalized 'gameSessionId', 'gameRoundId', 'playerId', 'hostPlayerId', and 'members' map (copied from the GameSession) for authorization independence. Only the submitting player can create, and all players in 'members' can read.",
-          "params": [
-            {
-              "name": "gameSessionId",
-              "description": "The unique identifier of the great-grandparent game session."
-            },
-            {
-              "name": "gameRoundId",
-              "description": "The unique identifier of the grandparent game round."
-            },
-            {
-              "name": "playerSubmissionId",
-              "description": "The unique identifier for this player's submission."
-            }
-          ]
-        }
-      },
-      {
-        "path": "/game_sessions/{gameSessionId}/game_rounds/{gameRoundId}/player_submissions/{playerSubmissionId}/answer_validation_results/{answerValidationResultId}",
-        "definition": {
-          "entityName": "AnswerValidationResult",
-          "schema": {
-            "$ref": "#/backend/entities/AnswerValidationResult"
-          },
-          "description": "Stores the validation outcome and scoring for a single answer. Includes denormalized 'gameSessionId', 'gameRoundId', 'playerId', 'hostPlayerId', and 'members' map (copied from the GameSession) for authorization independence. Host can write if 'Human' validation, AI/server function writes if 'AI', and all players in 'members' can read.",
-          "params": [
-            {
-              "name": "gameSessionId",
-              "description": "The unique identifier of the great-great-grandparent game session."
-            },
-            {
-              "name": "gameRoundId",
-              "description": "The unique identifier of the great-grandparent game round."
-            },
-            {
-              "name": "playerSubmissionId",
-              "description": "The unique identifier of the grandparent player submission."
-            },
-            {
-              "name": "answerValidationResultId",
-              "description": "The unique identifier for this specific answer validation result."
-            }
-          ]
-        }
-      }
-    ],
-    "reasoning": "The Firestore data structure is designed with a strong emphasis on Authorization Independence and supporting Query-Aware Security Rules (QAPs), as mandated by the core design principles. This is achieved primarily through pervasive denormalization of authorization context.\n\n1.  **PlayerProfile:** Player profiles are stored in a top-level collection `/player_profiles/{playerId}`. This structure uses path-based ownership, where `playerId` matches `request.auth.uid` for write access. For read access, all authenticated users can read any profile. This allows players to see other participants' profiles in lobbies or results, without complex `get()` calls in rules.\n\n2.  **GameSession:** Game sessions are organized in `/game_sessions/{gameSessionId}`. Each `GameSession` document contains a `hostPlayerId` and a `members` map (e.g., `{uid1: true, uid2: true}`). This `members` map is crucial: it denormalizes the list of participating players, allowing security rules to check membership directly (`request.auth.uid in resource.data.members`) without requiring `get()` calls to other documents. The `validationMode` field explicitly supports 'AI' or 'Human' validation, directly addressing the user's requirement.\n\n3.  **Hierarchical & Denormalized Subcollections:** All subsequent game-related entities (`GameRound`, `PlayerSubmission`, `AnswerValidationResult`) are structured as subcollections, continuing the hierarchical path: \n    *   `/game_sessions/{gameSessionId}/game_rounds/{gameRoundId}`\n    *   `/game_sessions/{gameSessionId}/game_rounds/{gameRoundId}/player_submissions/{playerSubmissionId}`\n    *   `/game_sessions/{gameSessionId}/game_rounds/{gameRoundId}/player_submissions/{playerSubmissionId}/answer_validation_results/{answerValidationResultId}`\n\n    **Authorization Independence:** To ensure authorization independence, every document within these subcollections (`GameRound`, `PlayerSubmission`, `AnswerValidationResult`) explicitly denormalizes the `gameSessionId`, `hostPlayerId`, and the `members` map from its parent `GameSession`. Additionally, `PlayerSubmission` documents include their `playerId`, and `AnswerValidationResult` documents include the `playerId` of the submission's owner and the `validatorPlayerId`. This eliminates the need for `get()` operations in security rules to ascertain a user's role or membership within a game session, thereby enabling atomic batch writes and simplifying rule logic. For example, a rule for `PlayerSubmission` can simply check `request.auth.uid == resource.data.playerId && request.auth.uid in resource.data.members` for submission creation, and `request.auth.uid in resource.data.members` for read access.\n\n4.  **QAPs (Query-Aware Security Rules):**\n    *   **`/player_profiles`**: `list` operations are allowed for authenticated users. Security rules will allow reading any profile for display purposes, with individual users having write access to their own profile.\n    *   **`/game_sessions`**: `list` operations are allowed for authenticated users to discover available games. Rules will ensure that only relevant fields are visible (e.g., `status: LOBBY`). Specific read/write access is then governed by the `hostPlayerId` and `members` map directly on the `GameSession` document.\n    *   **Subcollections (`GameRound`, `PlayerSubmission`, `AnswerValidationResult`)**: Because each document in these subcollections contains the denormalized `members` map, `list` queries can be securely performed. Security rules will allow `list` and `get` operations only if `request.auth.uid in resource.data.members`, guaranteeing that only participants of a given game session can access its specific rounds, submissions, and validation results. This prevents unauthorized users from querying sensitive game data and aligns with the principle that rules are not filters."
+    "/player_profiles/{playerId}": {
+      "schema": "#/entities/PlayerProfile",
+      "description": "Individual player profiles."
+    },
+    "/game_sessions/{gameSessionId}": {
+      "schema": "#/entities/GameSession",
+      "description": "Active game sessions."
+    },
+    "/game_sessions/{gameSessionId}/submissions/{playerId}": {
+      "schema": "#/entities/Submission",
+      "description": "Round submissions for a session."
+    }
   }
 }

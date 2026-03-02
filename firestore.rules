@@ -1,132 +1,56 @@
+
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
     /**
      * Core Philosophy:
-     * This ruleset implements a hybrid security model designed for a multiplayer game environment. It combines 
-     * strict user-ownership for personal profiles with a shared-access model for game sessions. 
-     * 
-     * Data Structure:
-     * 1. /player_profiles/{playerId}: User-specific profiles.
-     * 2. /game_sessions/{gameSessionId}: The root of a game instance.
-     * 3. Subcollections: /game_rounds, /player_submissions, and /answer_validation_results are nested 
-     *    under the session to maintain clear data boundaries.
-     * 
-     * Key Security Decisions:
-     * - Authorization Independence: Every document within a game session's sub-tree denormalizes the 
-     *   `members` map and `hostPlayerId`. This allows rules to verify access locally without expensive 
-     *   `get()` calls to parent documents.
-     * - Public Discovery: Game sessions and player profiles are readable by all authenticated users to 
-     *   facilitate lobby discovery and social interaction.
-     * - Write Protection: Only the host of a session or the owner of a specific submission/profile 
-     *   can perform write operations.
-     * 
-     * Denormalization for Authorization:
-     * To ensure high performance and avoid deep-nested rule lookups, the following fields are 
-     * required on all game-related documents:
-     * - `members`: A map of UIDs (e.g., `{ "uid123": true }`) representing all players in the session.
-     * - `hostPlayerId`: The UID of the session creator/admin.
-     * - `playerId`: (On submissions) The UID of the player who authored the content.
+     * This ruleset implements a hybrid security model designed for a multiplayer game environment.
      */
 
     // --- Helper Functions ---
 
-    /** @description Checks if the user is authenticated. */
     function isSignedIn() {
       return request.auth != null;
     }
 
-    /** @description Checks if the user's UID matches the provided ID. */
     function isOwner(userId) {
       return isSignedIn() && request.auth.uid == userId;
     }
 
-    /** @description Checks if a document exists and the user is the owner. */
     function isExistingOwner(userId) {
       return resource != null && isOwner(userId);
     }
 
-    /** @description Checks if the user is the host of the game session. */
     function isHost(hostId) {
       return isSignedIn() && request.auth.uid == hostId;
     }
 
-    /** @description Checks if the user is a member of the session based on a denormalized map. */
     function isMember(membersMap) {
       return isSignedIn() && membersMap.keys().hasAny([request.auth.uid]);
     }
 
     // --- Collection Rules ---
 
-    /**
-     * @description Rules for player profiles. Owners can manage their data; others can view.
-     * @path /player_profiles/{playerId}
-     * @allow (create) if auth.uid matches playerId.
-     * @deny (update) if auth.uid does not match the document ID.
-     * @principle Path-based ownership and relational integrity.
-     */
     match /player_profiles/{playerId} {
       allow get, list: if isSignedIn();
-      allow create: if isOwner(playerId) && request.resource.data.id == playerId;
-      allow update: if isExistingOwner(playerId) && request.resource.data.id == resource.data.id;
-      allow delete: if isExistingOwner(playerId);
+      allow create: if isOwner(playerId);
+      allow update: if isOwner(playerId);
+      allow delete: if isOwner(playerId);
     }
 
-    /**
-     * @description Rules for game sessions. Host manages the session; others can discover and read.
-     * @path /game_sessions/{gameSessionId}
-     * @allow (create) if the user sets themselves as the hostPlayerId.
-     * @deny (update) if the user is not the host or not joining the session.
-     * @principle Shared access model with host-only administrative writes.
-     */
     match /game_sessions/{gameSessionId} {
       allow get, list: if isSignedIn();
       allow create: if isSignedIn() && request.resource.data.hostPlayerId == request.auth.uid;
-      // Host can update anything. Non-hosts can only update if they are adding themselves to the members map (simplified for prototype).
       allow update: if isExistingOwner(resource.data.hostPlayerId) || isSignedIn();
       allow delete: if isExistingOwner(resource.data.hostPlayerId);
-    }
 
-    /**
-     * @description Rules for game rounds. Access restricted to session members.
-     * @path /game_sessions/{gameSessionId}/game_rounds/{gameRoundId}
-     * @allow (list) if user UID is in the document's denormalized 'members' map.
-     * @deny (create) if the user is not the host of the parent session.
-     * @principle Denormalized authorization context for subcollections.
-     */
-    match /game_sessions/{gameSessionId}/game_rounds/{gameRoundId} {
-      allow get, list: if isMember(resource.data.members);
-      allow create: if isHost(request.resource.data.hostPlayerId);
-      allow update, delete: if isExistingOwner(resource.data.hostPlayerId);
-    }
-
-    /**
-     * @description Rules for player submissions. Only the player can create; all members can read results.
-     * @path /game_sessions/{gameSessionId}/game_rounds/{gameRoundId}/player_submissions/{playerSubmissionId}
-     * @allow (create) if auth.uid matches the submission's 'playerId'.
-     * @deny (read) if the user is not part of the game session.
-     * @principle Combination of individual ownership and shared session access.
-     */
-    match /game_sessions/{gameSessionId}/game_rounds/{gameRoundId}/player_submissions/{playerSubmissionId} {
-      allow get, list: if isMember(resource.data.members);
-      allow create: if isOwner(request.resource.data.playerId) && isMember(request.resource.data.members);
-      allow update: if isExistingOwner(resource.data.playerId);
-      allow delete: if isExistingOwner(resource.data.playerId) || isExistingOwner(resource.data.hostPlayerId);
-    }
-
-    /**
-     * @description Rules for answer validation. Host or system (AI) writes results.
-     * @path /game_sessions/.../answer_validation_results/{answerValidationResultId}
-     * @allow (get) if user is a member of the session.
-     * @deny (create) if the user is not the host (unless in AI mode, handled by app logic/service account).
-     * @principle Host-controlled validation logic.
-     */
-    match /game_sessions/{gameSessionId}/game_rounds/{gameRoundId}/player_submissions/{playerSubmissionId}/answer_validation_results/{answerValidationResultId} {
-      allow get, list: if isMember(resource.data.members);
-      // For prototyping, allow host to create. AI validation is typically handled by a Service Account which bypasses rules.
-      allow create: if isHost(request.resource.data.hostPlayerId) || request.resource.data.validationMethod == 'AI';
-      allow update, delete: if isExistingOwner(resource.data.hostPlayerId);
+      // Rule for submissions subcollection
+      match /submissions/{playerId} {
+        allow get, list: if isMember(resource.data.members);
+        allow create, update: if isOwner(playerId) && isMember(request.resource.data.members);
+        allow delete: if isOwner(playerId) || isHost(resource.data.hostPlayerId);
+      }
     }
   }
 }
