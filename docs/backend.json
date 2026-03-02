@@ -24,7 +24,20 @@
         "currentLetter": { "type": "string" },
         "roundCount": { "type": "number" },
         "members": { "type": "object" },
-        "players": { "type": "array" }
+        "validationMode": { "type": "string" }
+      }
+    },
+    "SessionPlayer": {
+      "title": "SessionPlayer",
+      "type": "object",
+      "description": "A player within a specific session.",
+      "properties": {
+        "id": { "type": "string" },
+        "nickname": { "type": "string" },
+        "avatar": { "type": "string" },
+        "score": { "type": "number" },
+        "isHost": { "type": "boolean" },
+        "lastRoundScore": { "type": "number" }
       }
     },
     "Submission": {
@@ -35,9 +48,7 @@
         "id": { "type": "string" },
         "playerId": { "type": "string" },
         "answers": { "type": "object" },
-        "roundCount": { "type": "number" },
-        "members": { "type": "object" },
-        "hostPlayerId": { "type": "string" }
+        "roundCount": { "type": "number" }
       }
     }
   },
@@ -52,6 +63,10 @@
     "/game_sessions/{gameSessionId}": {
       "schema": "#/entities/GameSession",
       "description": "Active game sessions."
+    },
+    "/game_sessions/{gameSessionId}/players/{playerId}": {
+      "schema": "#/entities/SessionPlayer",
+      "description": "Players currently in the session."
     },
     "/game_sessions/{gameSessionId}/submissions/{playerId}": {
       "schema": "#/entities/Submission",

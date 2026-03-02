@@ -15,10 +15,6 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == userId;
     }
 
-    function isHost(hostId) {
-      return isSignedIn() && request.auth.uid == hostId;
-    }
-
     function getSessionData(gameSessionId) {
       return get(/databases/$(database)/documents/game_sessions/$(gameSessionId)).data;
     }
@@ -31,32 +27,36 @@ service cloud.firestore {
              session.members[request.auth.uid] == true;
     }
 
+    function isHost(gameSessionId) {
+      let session = getSessionData(gameSessionId);
+      return isSignedIn() && session.hostPlayerId == request.auth.uid;
+    }
+
     // --- Collection Rules ---
 
     match /player_profiles/{playerId} {
       allow get, list: if isSignedIn();
-      allow create: if isOwner(playerId);
-      allow update: if isOwner(playerId);
+      allow create, update: if isOwner(playerId);
       allow delete: if isOwner(playerId);
     }
 
     match /game_sessions/{gameSessionId} {
       allow get, list: if isSignedIn();
       allow create: if isSignedIn() && request.resource.data.hostPlayerId == request.auth.uid;
-      
-      // Allow any signed-in user to update the session (needed for guests to trigger "STOP")
-      // The application logic ensures only valid transitions are made.
       allow update: if isSignedIn();
-      allow delete: if isHost(resource.data.hostPlayerId);
+      allow delete: if isHost(gameSessionId);
 
-      // Submissions sub-collection
+      match /players/{playerId} {
+        allow get, list: if isSignedIn();
+        allow create, update: if isSignedIn();
+        allow delete: if isOwner(playerId) || isHost(gameSessionId);
+      }
+
       match /submissions/{playerId} {
-        // Relax list permission to avoid race conditions during joining.
-        // Data is still effectively private to the session ID.
         allow list: if isSignedIn();
         allow get: if isSessionMember(gameSessionId);
         allow create, update: if isOwner(playerId);
-        allow delete: if isOwner(playerId) || isHost(getSessionData(gameSessionId).hostPlayerId);
+        allow delete: if isOwner(playerId) || isHost(gameSessionId);
       }
     }
   }

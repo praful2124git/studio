@@ -1,7 +1,7 @@
 
 "use client"
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -62,29 +62,32 @@ export default function Home() {
   const gameSessionRef = useMemoFirebase(() => (user && roomCode) ? doc(db, 'game_sessions', roomCode) : null, [db, user, roomCode]);
   const { data: gameSession } = useDoc<GameState>(gameSessionRef);
 
+  // Real-time players list for this session
+  const sessionPlayersRef = useMemoFirebase(() => roomCode ? collection(db, 'game_sessions', roomCode, 'players') : null, [db, roomCode]);
+  const { data: sessionPlayers } = useCollection<Player>(sessionPlayersRef);
+
   // Submissions listener - for validation phase
   const submissionsRef = useMemoFirebase(() => {
-    if (!roomCode || !gameSession || !user) return null;
+    if (!roomCode || !gameSession || !user || !gameSession.members?.[user.uid]) return null;
     return query(
       collection(db, 'game_sessions', roomCode, 'submissions'),
       where('roundCount', '==', gameSession.roundCount)
     );
-  }, [db, roomCode, gameSession?.roundCount, user]);
+  }, [db, roomCode, gameSession?.roundCount, user, gameSession?.members]);
   
   const { data: submissions } = useCollection<Submission>(submissionsRef);
 
-  // Sync session scores to global profile locally
+  // Sync session scores to global profile
   useEffect(() => {
-    if (gameSession?.status === 'ROUND_RESULT' && user && gameSession.players) {
-      const meInSession = gameSession.players.find(p => p.id === user.uid);
-      if (meInSession && profile && meInSession.score !== profile.score) {
+    if (gameSession?.status === 'ROUND_RESULT' && user && sessionPlayers) {
+      const meInSession = sessionPlayers.find(p => p.id === user.uid);
+      if (meInSession && profile && (meInSession.score !== profile.score)) {
         updateDocumentNonBlocking(doc(db, 'player_profiles', user.uid), {
-          score: meInSession.score,
-          lastRoundScore: meInSession.lastRoundScore
+          score: meInSession.score
         });
       }
     }
-  }, [gameSession?.status, gameSession?.players, user, profile, db]);
+  }, [gameSession?.status, sessionPlayers, user, profile, db]);
 
   // Handle Game State transitions
   useEffect(() => {
@@ -111,14 +114,10 @@ export default function Home() {
     setDocumentNonBlocking(subRef, {
       id: user.uid,
       playerId: user.uid,
-      nickname: nickname,
-      avatar: avatar,
       answers: localAnswers,
-      roundCount: gameSession.roundCount,
-      hostPlayerId: gameSession.hostPlayerId,
-      members: gameSession.members
+      roundCount: gameSession.roundCount
     }, { merge: true });
-  }, [user, roomCode, gameSession, nickname, avatar, localAnswers, db]);
+  }, [user, roomCode, gameSession, localAnswers, db]);
 
   const handleSignIn = () => {
     initiateAnonymousSignIn(auth);
@@ -168,14 +167,15 @@ export default function Home() {
       score: profile?.score || 0,
     };
     
-    setDocumentNonBlocking(doc(db, 'player_profiles', user.uid), pData, { merge: true });
+    setDocumentNonBlocking(doc(db, 'player_profiles', user.uid), {
+      id: user.uid, nickname, avatar, score: profile?.score || 0
+    }, { merge: true });
 
     if (mode === 'HOST' || mode === 'SINGLE') {
       const code = mode === 'SINGLE' ? `SOLO-${user.uid.substring(0, 4)}` : Math.floor(1000 + Math.random() * 9000).toString();
       setRoomCode(code);
       
       const initialSession: GameState = {
-        players: [pData],
         status: 'LOBBY',
         currentLetter: '',
         timer: 60,
@@ -187,6 +187,7 @@ export default function Home() {
       };
       
       setDocumentNonBlocking(doc(db, 'game_sessions', code), initialSession, { merge: true });
+      setDocumentNonBlocking(doc(db, 'game_sessions', code, 'players', user.uid), pData, { merge: true });
       setStatus('LOBBY');
     } else if (mode === 'GUEST') {
       const sessionRef = doc(db, 'game_sessions', roomCode);
@@ -195,19 +196,9 @@ export default function Home() {
       if (sessionDoc.exists()) {
         const sessionData = sessionDoc.data() as GameState;
         const updatedMembers = { ...(sessionData.members || {}), [user.uid]: true };
-        const updatedPlayers = [...(sessionData.players || [])];
         
-        const existingIdx = updatedPlayers.findIndex(p => p.id === user.uid);
-        if (existingIdx > -1) {
-          updatedPlayers[existingIdx] = pData;
-        } else {
-          updatedPlayers.push(pData);
-        }
-
-        updateDocumentNonBlocking(sessionRef, {
-          members: updatedMembers,
-          players: updatedPlayers
-        });
+        updateDocumentNonBlocking(sessionRef, { members: updatedMembers });
+        setDocumentNonBlocking(doc(db, 'game_sessions', roomCode, 'players', user.uid), pData, { merge: true });
         setStatus('LOBBY');
       } else {
         toast({ title: "Room disappeared", description: "This room is no longer active.", variant: "destructive" });
@@ -281,56 +272,53 @@ export default function Home() {
   };
 
   const runAIValidation = async () => {
-    if (!gameSession || !user || gameSession.hostPlayerId !== user.uid) return;
+    if (!gameSession || !user || gameSession.hostPlayerId !== user.uid || !sessionPlayers) return;
     
     const letter = gameSession.currentLetter;
     
-    // Wait a brief moment for all submissions to arrive in Firestore
     setTimeout(async () => {
       const allSubmissions = submissions || [];
-      const updatedPlayers = await Promise.all(gameSession.players.map(async (p) => {
+      
+      await Promise.all(sessionPlayers.map(async (p) => {
         const sub = allSubmissions.find(s => s.playerId === p.id);
-        if (!sub) return { ...p, lastRoundScore: 0 };
+        let roundScore = 0;
 
-        try {
-          const result = await validateAnswers({
-            targetLetter: letter,
-            name: sub.answers.name,
-            place: sub.answers.place,
-            animal: sub.answers.animal,
-            thing: sub.answers.thing
-          });
+        if (sub) {
+          try {
+            const result = await validateAnswers({
+              targetLetter: letter,
+              name: sub.answers.name,
+              place: sub.answers.place,
+              animal: sub.answers.animal,
+              thing: sub.answers.thing
+            });
 
-          let roundScore = 0;
-          CATEGORIES.forEach(cat => {
-            const valKey = `${cat.toLowerCase()}Validation` as keyof typeof result;
-            const val = (result as any)[valKey];
-            if (val?.isValid) roundScore += 10;
-          });
-
-          return {
-            ...p,
-            score: (p.score || 0) + roundScore,
-            lastRoundScore: roundScore
-          };
-        } catch (e) {
-          return { ...p, lastRoundScore: 0 };
+            CATEGORIES.forEach(cat => {
+              const valKey = `${cat.toLowerCase()}Validation` as keyof typeof result;
+              const val = (result as any)[valKey];
+              if (val?.isValid) roundScore += 10;
+            });
+          } catch (e) {
+            roundScore = 0;
+          }
         }
+
+        updateDocumentNonBlocking(doc(db, 'game_sessions', roomCode, 'players', p.id), {
+          score: (p.score || 0) + roundScore,
+          lastRoundScore: roundScore
+        });
       }));
 
       if (gameSessionRef) {
-        updateDocumentNonBlocking(gameSessionRef, { 
-          status: 'ROUND_RESULT',
-          players: updatedPlayers
-        });
+        updateDocumentNonBlocking(gameSessionRef, { status: 'ROUND_RESULT' });
       }
     }, 2000);
   };
 
   const finalizeManualValidation = () => {
-    if (!gameSession) return;
+    if (!gameSession || !sessionPlayers) return;
 
-    const updatedPlayers = gameSession.players.map(p => {
+    sessionPlayers.forEach(p => {
       let roundScore = 0;
       const playerVals = hostValidation[p.id] || {};
       
@@ -340,24 +328,20 @@ export default function Home() {
         if (valStatus === 'duplicate') roundScore += 5;
       });
 
-      return {
-        ...p,
+      updateDocumentNonBlocking(doc(db, 'game_sessions', roomCode, 'players', p.id), {
         score: (p.score || 0) + roundScore,
         lastRoundScore: roundScore
-      };
+      });
     });
 
     if (gameSessionRef) {
-      updateDocumentNonBlocking(gameSessionRef, { 
-        status: 'ROUND_RESULT',
-        players: updatedPlayers
-      });
+      updateDocumentNonBlocking(gameSessionRef, { status: 'ROUND_RESULT' });
     }
   };
 
   if (isUserLoading) return <div className="min-h-screen flex items-center justify-center">Loading LetterLink...</div>;
 
-  const sortedPlayers = gameSession?.players ? [...gameSession.players].sort((a, b) => b.score - a.score) : [];
+  const sortedPlayers = sessionPlayers ? [...sessionPlayers].sort((a, b) => b.score - a.score) : [];
 
   return (
     <div className="min-h-screen p-4 flex flex-col items-center justify-center font-body text-foreground">
@@ -484,7 +468,7 @@ export default function Home() {
           <CardContent className="space-y-6">
             <div className="space-y-3">
               <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest">Players Joined</p>
-              {gameSession?.players?.map(p => (
+              {sessionPlayers?.map(p => (
                 <div key={p.id} className="flex items-center gap-3 p-4 bg-muted/50 rounded-2xl border-l-4 border-primary shadow-sm">
                   <span className="text-3xl">{p.avatar}</span>
                   <span className="font-bold text-lg flex-1">{p.nickname} {p.id === user?.uid ? '(You)' : ''}</span>
@@ -603,7 +587,7 @@ export default function Home() {
                         <div className="p-4 bg-muted/20 rounded-3xl border-2 border-primary/10">
                           <h3 className="text-2xl font-black text-primary text-center mb-6 uppercase tracking-widest">{cat}</h3>
                           <div className="space-y-3">
-                            {gameSession?.players.map(p => {
+                            {sessionPlayers?.map(p => {
                               const sub = submissions?.find(s => s.playerId === p.id);
                               const answer = sub?.answers[cat.toLowerCase() as keyof RoundAnswers];
                               const currentVal = hostValidation[p.id]?.[cat.toLowerCase()];
