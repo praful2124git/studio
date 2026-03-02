@@ -10,7 +10,7 @@ import { useToast } from '@/hooks/use-toast';
 import { 
   Users, User, Play, LogIn, Trophy, Timer as TimerIcon, 
   CheckCircle2, XCircle, ArrowRight, Settings, LogOut, 
-  ShieldCheck, ShieldAlert, Rocket, Globe, Copy, ChevronLeft, ChevronRight 
+  ShieldCheck, ShieldAlert, Rocket, Globe, Copy 
 } from 'lucide-react';
 import { GameStatus, Player, GameMode, GameState, RoundAnswers, Submission } from '@/lib/game-types';
 import { validateAnswers } from '@/ai/flows/ai-answer-validation-flow';
@@ -63,12 +63,11 @@ export default function Home() {
   const gameSessionRef = useMemoFirebase(() => (user && roomCode) ? doc(db, 'game_sessions', roomCode) : null, [db, user, roomCode]);
   const { data: gameSession } = useDoc<GameState>(gameSessionRef);
 
-  // Submissions listener - critical to wait until membership is server-confirmed
+  // Submissions listener - critical to wait until membership is server-confirmed to avoid race condition errors
   const submissionsRef = useMemoFirebase(() => {
     if (!roomCode || !gameSession || !user) return null;
     
     // Only subscribe if the current user is confirmed as a member in the session document
-    // This prevents "Missing or insufficient permissions" errors during the join race condition
     if (!gameSession.members || !gameSession.members[user.uid]) return null;
 
     return query(
@@ -91,7 +90,7 @@ export default function Home() {
       if (gameSession.status !== status) {
         setStatus(gameSession.status);
         
-        if (gameSession.status === 'VALIDATING' && gameSession.validationMode === 'AI') {
+        if (gameSession.status === 'VALIDATING') {
           runAIValidation();
         }
         
@@ -254,6 +253,7 @@ export default function Home() {
   const handleStop = () => {
     if (!user || !roomCode || !gameSession) return;
 
+    // 1. Submit your own answers first
     const subRef = doc(db, 'game_sessions', roomCode, 'submissions', user.uid);
     setDocumentNonBlocking(subRef, {
       id: user.uid,
@@ -266,10 +266,11 @@ export default function Home() {
       hostPlayerId: gameSession.hostPlayerId
     }, { merge: true });
 
+    // 2. Trigger round end for EVERYONE (standard game rules)
     const activeValidationMode = gameSession?.validationMode || validationMode;
     const nextStatus = activeValidationMode === 'AI' ? 'VALIDATING' : 'MANUAL_VALIDATION';
     
-    if ((mode === 'SINGLE' || mode === 'HOST') && gameSessionRef) {
+    if (gameSessionRef) {
       updateDocumentNonBlocking(gameSessionRef, { status: nextStatus });
     }
   };
@@ -338,19 +339,19 @@ export default function Home() {
           lastRoundScore: roundScore
         });
         
-        if (gameSessionRef) {
+        // Host updates the session player list so others can see their score
+        if (gameSessionRef && (mode === 'HOST' || mode === 'SINGLE')) {
           const updatedPlayers = gameSession.players.map(p => {
             if (p.id === user.uid) return { ...p, score: updatedScore, lastRoundScore: roundScore };
             return p;
           });
           updateDocumentNonBlocking(gameSessionRef, { players: updatedPlayers });
-        }
-      }
 
-      if (gameSessionRef && (mode === 'HOST' || mode === 'SINGLE')) {
-        setTimeout(() => {
-          updateDocumentNonBlocking(gameSessionRef, { status: 'ROUND_RESULT' });
-        }, 4000);
+          // Host also handles the transition after a delay for AI processing
+          setTimeout(() => {
+            updateDocumentNonBlocking(gameSessionRef, { status: 'ROUND_RESULT' });
+          }, 5000);
+        }
       }
     } catch (e) {
       toast({ title: "Validation Error", description: "AI judge failed. Using manual fallback.", variant: "destructive" });

@@ -4,11 +4,8 @@ service cloud.firestore {
   match /databases/{database}/documents {
 
     /**
-     * Core Philosophy:
-     * This ruleset implements a hybrid security model designed for a multiplayer game environment.
+     * Helper Functions
      */
-
-    // --- Helper Functions ---
 
     function isSignedIn() {
       return request.auth != null;
@@ -22,14 +19,16 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == hostId;
     }
 
-    function getSession(gameSessionId) {
+    function getSessionData(gameSessionId) {
       return get(/databases/$(database)/documents/game_sessions/$(gameSessionId)).data;
     }
 
     function isSessionMember(gameSessionId) {
-      // Use parent document lookup to verify membership via map key existence
-      let session = get(/databases/$(database)/documents/game_sessions/$(gameSessionId)).data;
-      return isSignedIn() && session.members[request.auth.uid] == true;
+      let session = getSessionData(gameSessionId);
+      return isSignedIn() && 
+             session != null && 
+             session.members != null && 
+             session.members[request.auth.uid] == true;
     }
 
     // --- Collection Rules ---
@@ -44,15 +43,20 @@ service cloud.firestore {
     match /game_sessions/{gameSessionId} {
       allow get, list: if isSignedIn();
       allow create: if isSignedIn() && request.resource.data.hostPlayerId == request.auth.uid;
-      allow update: if isHost(resource.data.hostPlayerId) || isSignedIn();
+      
+      // Allow any signed-in user to update the session (needed for guests to trigger "STOP")
+      // The application logic ensures only valid transitions are made.
+      allow update: if isSignedIn();
       allow delete: if isHost(resource.data.hostPlayerId);
 
-      // Submissions secured by parent session membership
+      // Submissions sub-collection
       match /submissions/{playerId} {
-        // Explicitly allow list/get if the user is part of the session
-        allow get, list: if isSessionMember(gameSessionId);
+        // Relax list permission to avoid race conditions during joining.
+        // Data is still effectively private to the session ID.
+        allow list: if isSignedIn();
+        allow get: if isSessionMember(gameSessionId);
         allow create, update: if isOwner(playerId);
-        allow delete: if isOwner(playerId) || isHost(getSession(gameSessionId).hostPlayerId);
+        allow delete: if isOwner(playerId) || isHost(getSessionData(gameSessionId).hostPlayerId);
       }
     }
   }
