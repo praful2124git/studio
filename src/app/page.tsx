@@ -18,7 +18,7 @@ import {
   useUser, useFirestore, useDoc, useMemoFirebase, useCollection,
   setDocumentNonBlocking, updateDocumentNonBlocking, initiateAnonymousSignIn 
 } from '@/firebase';
-import { doc, collection, query, where } from 'firebase/firestore';
+import { doc, collection, query, where, getDoc } from 'firebase/firestore';
 import { signOut } from 'firebase/auth';
 import { useAuth } from '@/firebase';
 import {
@@ -63,21 +63,20 @@ export default function Home() {
   const gameSessionRef = useMemoFirebase(() => (user && roomCode) ? doc(db, 'game_sessions', roomCode) : null, [db, user, roomCode]);
   const { data: gameSession } = useDoc<GameState>(gameSessionRef);
 
-  // Submissions listener
+  // Submissions listener - for validation phase
   const submissionsRef = useMemoFirebase(() => {
     if (!roomCode || !gameSession || !user) return null;
-    if (!gameSession.members || !gameSession.members[user.uid]) return null;
-
     return query(
       collection(db, 'game_sessions', roomCode, 'submissions'),
       where('roundCount', '==', gameSession.roundCount)
     );
-  }, [db, roomCode, gameSession?.roundCount, user, gameSession?.members]);
+  }, [db, roomCode, gameSession?.roundCount, user]);
   
   const { data: submissions } = useCollection<Submission>(submissionsRef);
 
+  // Initial load of profile info if it exists
   useEffect(() => {
-    if (profile) {
+    if (profile && !nickname) {
       setNickname(profile.nickname || '');
       setAvatar(profile.avatar || AVATARS[0]);
     }
@@ -90,14 +89,13 @@ export default function Home() {
     setDocumentNonBlocking(subRef, {
       id: user.uid,
       playerId: user.uid,
-      nickname: profile?.nickname || nickname,
-      avatar: profile?.avatar || avatar,
+      nickname: nickname,
+      avatar: avatar,
       answers: localAnswers,
       roundCount: gameSession.roundCount,
-      members: gameSession.members, 
       hostPlayerId: gameSession.hostPlayerId
     }, { merge: true });
-  }, [user, roomCode, gameSession, profile, nickname, avatar, localAnswers, db]);
+  }, [user, roomCode, gameSession, nickname, avatar, localAnswers, db]);
 
   // Handle game state transitions and remote triggers
   useEffect(() => {
@@ -122,7 +120,7 @@ export default function Home() {
     }
   }, [gameSession, status, user, submitLocalAnswers]);
 
-  // Sync session scores to global profile (Safe: only owner updates own doc)
+  // Sync session scores to global profile
   useEffect(() => {
     if (gameSession?.status === 'ROUND_RESULT' && user && gameSession.players) {
       const meInSession = gameSession.players.find(p => p.id === user.uid);
@@ -143,33 +141,6 @@ export default function Home() {
     }
   }, [gameSession?.status]);
 
-  // Guest joining logic
-  useEffect(() => {
-    if (gameSession && mode === 'GUEST' && user && profile && (status === 'LOBBY' || status === 'PROFILE')) {
-      const alreadyJoined = gameSession.members?.[user.uid];
-      if (!alreadyJoined && status === 'LOBBY') {
-        const updatedMembers = { ...gameSession.members, [user.uid]: true };
-        const guestPlayer: Player = {
-          id: user.uid,
-          nickname: profile.nickname,
-          avatar: profile.avatar,
-          isHost: false,
-          score: profile.score || 0
-        };
-        
-        const updatedPlayers = [...(gameSession.players || [])];
-        if (!updatedPlayers.find(p => p.id === user.uid)) {
-          updatedPlayers.push(guestPlayer);
-        }
-        
-        updateDocumentNonBlocking(doc(db, 'game_sessions', roomCode), {
-          members: updatedMembers,
-          players: updatedPlayers
-        });
-      }
-    }
-  }, [gameSession, mode, user, profile, roomCode, db, status]);
-
   const handleSignIn = () => {
     initiateAnonymousSignIn(auth);
   };
@@ -186,6 +157,23 @@ export default function Home() {
     }
   };
 
+  const handleJoinCode = async () => {
+    if (inputCode.length !== 4) {
+      toast({ title: "Invalid Code", description: "Please enter a 4-digit code." });
+      return;
+    }
+    
+    // Check if session exists
+    const sessionDoc = await getDoc(doc(db, 'game_sessions', inputCode));
+    if (!sessionDoc.exists()) {
+      toast({ title: "Room Not Found", description: "This room code doesn't exist.", variant: "destructive" });
+      return;
+    }
+
+    setRoomCode(inputCode);
+    setStatus('PROFILE');
+  };
+
   const finalizeProfile = () => {
     if (!nickname.trim()) {
       toast({ title: "Nickname required", description: "Who are you?" });
@@ -200,10 +188,12 @@ export default function Home() {
         isHost: mode === 'HOST' || mode === 'SINGLE',
         score: profile?.score || 0,
       };
+      
+      // Update global profile
       setDocumentNonBlocking(doc(db, 'player_profiles', user.uid), pData, { merge: true });
 
       if (mode === 'HOST' || mode === 'SINGLE') {
-        const code = Math.floor(1000 + Math.random() * 9000).toString();
+        const code = mode === 'SINGLE' ? `SOLO-${user.uid.substring(0, 4)}` : Math.floor(1000 + Math.random() * 9000).toString();
         setRoomCode(code);
         
         const initialSession: GameState = {
@@ -221,18 +211,23 @@ export default function Home() {
         setDocumentNonBlocking(doc(db, 'game_sessions', code), initialSession, { merge: true });
         setStatus('LOBBY');
       } else if (mode === 'GUEST') {
+        // Join existing session in lobby
+        if (gameSessionRef) {
+          const updatedMembers = { ...(gameSession?.members || {}), [user.uid]: true };
+          const updatedPlayers = [...(gameSession?.players || [])];
+          
+          if (!updatedPlayers.find(p => p.id === user.uid)) {
+            updatedPlayers.push(pData);
+          }
+
+          updateDocumentNonBlocking(gameSessionRef, {
+            members: updatedMembers,
+            players: updatedPlayers
+          });
+        }
         setStatus('LOBBY');
       }
     }
-  };
-
-  const handleJoinCode = () => {
-    if (inputCode.length !== 4) {
-      toast({ title: "Invalid Code", description: "Please enter a 4-digit code." });
-      return;
-    }
-    setRoomCode(inputCode);
-    setStatus('PROFILE');
   };
 
   const initiateRound = () => {
@@ -307,9 +302,9 @@ export default function Home() {
       const playerVals = hostValidation[p.id] || {};
       
       CATEGORIES.forEach(cat => {
-        const status = playerVals[cat.toLowerCase()];
-        if (status === 'correct') roundScore += 10;
-        if (status === 'duplicate') roundScore += 5;
+        const valStatus = playerVals[cat.toLowerCase()];
+        if (valStatus === 'correct') roundScore += 10;
+        if (valStatus === 'duplicate') roundScore += 5;
       });
 
       return {
@@ -325,11 +320,10 @@ export default function Home() {
         players: updatedPlayers
       });
     }
-    // Individual profile updates are handled by the players themselves via the useEffect listener
   };
 
   const runAIValidation = async () => {
-    if (!gameSession) return;
+    if (!gameSession || !user) return;
     
     const letter = gameSession.currentLetter;
     try {
@@ -348,26 +342,26 @@ export default function Home() {
         if (val?.isValid) roundScore += 10;
       });
 
-      const updatedScore = (profile?.score || 0) + roundScore;
+      const updatedTotalScore = (profile?.score || 0) + roundScore;
       
-      if (user) {
-        updateDocumentNonBlocking(doc(db, 'player_profiles', user.uid), {
-          score: updatedScore,
-          lastRoundScore: roundScore
-        });
-        
-        if (gameSessionRef && (mode === 'HOST' || mode === 'SINGLE')) {
-          setTimeout(() => {
-            const latestPlayers = gameSession.players.map(p => {
-              if (p.id === user.uid) return { ...p, score: updatedScore, lastRoundScore: roundScore };
-              return p;
-            });
-            updateDocumentNonBlocking(gameSessionRef, { 
-              status: 'ROUND_RESULT',
-              players: latestPlayers
-            });
-          }, 3000);
-        }
+      updateDocumentNonBlocking(doc(db, 'player_profiles', user.uid), {
+        score: updatedTotalScore,
+        lastRoundScore: roundScore
+      });
+      
+      // If host, finalize after a delay for others to finish
+      if (gameSessionRef && (mode === 'HOST' || mode === 'SINGLE')) {
+        setTimeout(() => {
+          // Note: In real production we'd collect all scores, for MVP host's AI results finalize the session
+          const latestPlayers = gameSession.players.map(p => {
+            if (p.id === user.uid) return { ...p, score: updatedTotalScore, lastRoundScore: roundScore };
+            return p;
+          });
+          updateDocumentNonBlocking(gameSessionRef, { 
+            status: 'ROUND_RESULT',
+            players: latestPlayers
+          });
+        }, 3000);
       }
     } catch (e) {
       toast({ title: "Validation Error", description: "AI judge failed. Using manual fallback.", variant: "destructive" });
@@ -431,7 +425,7 @@ export default function Home() {
                   <span className="text-2xl">{profile.avatar}</span>
                   <span className="font-bold">{profile.nickname}</span>
                 </div>
-                <Badge variant="outline" className="text-accent font-bold">Total: {profile.score}</Badge>
+                <Badge variant="outline" className="text-accent font-bold">All-time: {profile.score}</Badge>
               </div>
             )}
           </CardContent>
@@ -463,7 +457,8 @@ export default function Home() {
       {status === 'PROFILE' && (
         <Card className="w-full max-w-md border-2 border-primary/20 shadow-2xl bg-card">
           <CardHeader className="text-center">
-            <CardTitle className="text-2xl font-bold">Profile Setup</CardTitle>
+            <CardTitle className="text-2xl font-bold">Who are you today?</CardTitle>
+            <CardDescription>Pick an avatar and a nickname</CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
             <div className="flex flex-wrap justify-center gap-3">
@@ -485,7 +480,7 @@ export default function Home() {
             />
             
             <Button className="w-full h-14 text-xl font-bold bg-accent hover:bg-accent/90 rounded-2xl" onClick={finalizeProfile}>
-              Let's Play <ArrowRight className="ml-2 w-6 h-6" />
+              Enter Game <ArrowRight className="ml-2 w-6 h-6" />
             </Button>
           </CardContent>
         </Card>
@@ -604,7 +599,7 @@ export default function Home() {
             <div className="w-20 h-20 border-8 border-primary border-t-accent rounded-full animate-spin"></div>
           </div>
           <CardTitle className="text-3xl font-black mb-3">AI Judge at Work</CardTitle>
-          <CardDescription className="text-xl font-medium">Analyzing your answers against the rules...</CardDescription>
+          <CardDescription className="text-xl font-medium">Analyzing everyone's answers...</CardDescription>
         </Card>
       )}
 
@@ -687,7 +682,7 @@ export default function Home() {
                 </Carousel>
                 
                 <Button className="w-full h-16 bg-primary rounded-2xl font-black text-xl shadow-lg mt-6" onClick={finalizeManualValidation}>
-                  Finalize & Show Leaderboard
+                  Finalize Scores
                 </Button>
               </div>
             ) : (
