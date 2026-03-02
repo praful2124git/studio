@@ -1,7 +1,7 @@
 
 "use client"
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -63,11 +63,9 @@ export default function Home() {
   const gameSessionRef = useMemoFirebase(() => (user && roomCode) ? doc(db, 'game_sessions', roomCode) : null, [db, user, roomCode]);
   const { data: gameSession } = useDoc<GameState>(gameSessionRef);
 
-  // Submissions listener - critical to wait until membership is server-confirmed to avoid race condition errors
+  // Submissions listener
   const submissionsRef = useMemoFirebase(() => {
     if (!roomCode || !gameSession || !user) return null;
-    
-    // Only subscribe if the current user is confirmed as a member in the session document
     if (!gameSession.members || !gameSession.members[user.uid]) return null;
 
     return query(
@@ -85,11 +83,34 @@ export default function Home() {
     }
   }, [profile]);
 
+  const submitLocalAnswers = useCallback(() => {
+    if (!user || !roomCode || !gameSession) return;
+    
+    const subRef = doc(db, 'game_sessions', roomCode, 'submissions', user.uid);
+    setDocumentNonBlocking(subRef, {
+      id: user.uid,
+      playerId: user.uid,
+      nickname: profile?.nickname || nickname,
+      avatar: profile?.avatar || avatar,
+      answers: localAnswers,
+      roundCount: gameSession.roundCount,
+      members: gameSession.members, 
+      hostPlayerId: gameSession.hostPlayerId
+    }, { merge: true });
+  }, [user, roomCode, gameSession, profile, nickname, avatar, localAnswers, db]);
+
   useEffect(() => {
     if (gameSession && user) {
       if (gameSession.status !== status) {
+        // Status changed remotely
+        const oldStatus = status;
         setStatus(gameSession.status);
         
+        // Auto-submit if the round ended by anyone
+        if (oldStatus === 'PLAYING' && (gameSession.status === 'VALIDATING' || gameSession.status === 'MANUAL_VALIDATION')) {
+          submitLocalAnswers();
+        }
+
         if (gameSession.status === 'VALIDATING') {
           runAIValidation();
         }
@@ -99,7 +120,7 @@ export default function Home() {
         }
       }
     }
-  }, [gameSession, status, user]);
+  }, [gameSession, status, user, submitLocalAnswers]);
 
   useEffect(() => {
     if (gameSession?.status === 'COUNTDOWN') {
@@ -109,29 +130,32 @@ export default function Home() {
     }
   }, [gameSession?.status]);
 
-  // Guest joining logic
+  // Guest joining logic - ensure it only runs once per join
   useEffect(() => {
-    if (gameSession && mode === 'GUEST' && user && profile && !gameSession.members?.[user.uid]) {
-      const updatedMembers = { ...gameSession.members, [user.uid]: true };
-      const guestPlayer: Player = {
-        id: user.uid,
-        nickname: profile.nickname,
-        avatar: profile.avatar,
-        isHost: false,
-        score: profile.score || 0
-      };
-      
-      const updatedPlayers = [...gameSession.players];
-      if (!updatedPlayers.find(p => p.id === user.uid)) {
-        updatedPlayers.push(guestPlayer);
+    if (gameSession && mode === 'GUEST' && user && profile && status === 'LOBBY') {
+      const alreadyJoined = gameSession.members?.[user.uid];
+      if (!alreadyJoined) {
+        const updatedMembers = { ...gameSession.members, [user.uid]: true };
+        const guestPlayer: Player = {
+          id: user.uid,
+          nickname: profile.nickname,
+          avatar: profile.avatar,
+          isHost: false,
+          score: profile.score || 0
+        };
+        
+        const updatedPlayers = [...(gameSession.players || [])];
+        if (!updatedPlayers.find(p => p.id === user.uid)) {
+          updatedPlayers.push(guestPlayer);
+        }
+        
+        updateDocumentNonBlocking(doc(db, 'game_sessions', roomCode), {
+          members: updatedMembers,
+          players: updatedPlayers
+        });
       }
-      
-      updateDocumentNonBlocking(doc(db, 'game_sessions', roomCode), {
-        members: updatedMembers,
-        players: updatedPlayers
-      });
     }
-  }, [gameSession, mode, user, profile, roomCode, db]);
+  }, [gameSession, mode, user, profile, roomCode, db, status]);
 
   const handleSignIn = () => {
     initiateAnonymousSignIn(auth);
@@ -215,7 +239,7 @@ export default function Home() {
   };
 
   const toggleValidationMode = () => {
-    const nextMode = validationMode === 'AI' ? 'HUMAN' : 'AI';
+    const nextMode = (gameSession?.validationMode || validationMode) === 'AI' ? 'HUMAN' : 'AI';
     setValidationMode(nextMode);
     if (gameSessionRef) {
       updateDocumentNonBlocking(gameSessionRef, { validationMode: nextMode });
@@ -253,20 +277,10 @@ export default function Home() {
   const handleStop = () => {
     if (!user || !roomCode || !gameSession) return;
 
-    // 1. Submit your own answers first
-    const subRef = doc(db, 'game_sessions', roomCode, 'submissions', user.uid);
-    setDocumentNonBlocking(subRef, {
-      id: user.uid,
-      playerId: user.uid,
-      nickname: profile?.nickname || nickname,
-      avatar: profile?.avatar || avatar,
-      answers: localAnswers,
-      roundCount: gameSession.roundCount,
-      members: gameSession.members, 
-      hostPlayerId: gameSession.hostPlayerId
-    }, { merge: true });
+    // 1. Trigger submission for current user (others triggered by status listener)
+    submitLocalAnswers();
 
-    // 2. Trigger round end for EVERYONE (standard game rules)
+    // 2. Trigger round end for EVERYONE
     const activeValidationMode = gameSession?.validationMode || validationMode;
     const nextStatus = activeValidationMode === 'AI' ? 'VALIDATING' : 'MANUAL_VALIDATION';
     
@@ -341,15 +355,16 @@ export default function Home() {
         
         // Host updates the session player list so others can see their score
         if (gameSessionRef && (mode === 'HOST' || mode === 'SINGLE')) {
-          const updatedPlayers = gameSession.players.map(p => {
-            if (p.id === user.uid) return { ...p, score: updatedScore, lastRoundScore: roundScore };
-            return p;
-          });
-          updateDocumentNonBlocking(gameSessionRef, { players: updatedPlayers });
-
-          // Host also handles the transition after a delay for AI processing
           setTimeout(() => {
-            updateDocumentNonBlocking(gameSessionRef, { status: 'ROUND_RESULT' });
+            // Update session with final results after allowing time for others to validate
+            const latestPlayers = gameSession.players.map(p => {
+              if (p.id === user.uid) return { ...p, score: updatedScore, lastRoundScore: roundScore };
+              return p;
+            });
+            updateDocumentNonBlocking(gameSessionRef, { 
+              status: 'ROUND_RESULT',
+              players: latestPlayers
+            });
           }, 5000);
         }
       }
@@ -489,7 +504,7 @@ export default function Home() {
           <CardContent className="space-y-6">
             <div className="space-y-3">
               <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest">Players Joined</p>
-              {gameSession?.players.map(p => (
+              {gameSession?.players?.map(p => (
                 <div key={p.id} className="flex items-center gap-3 p-4 bg-muted/50 rounded-2xl border-l-4 border-primary shadow-sm">
                   <span className="text-3xl">{p.avatar}</span>
                   <span className="font-bold text-lg flex-1">{p.nickname} {p.id === user?.uid ? '(You)' : ''}</span>
