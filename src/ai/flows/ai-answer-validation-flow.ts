@@ -1,10 +1,7 @@
+
 'use server';
 /**
  * @fileOverview A Genkit flow for validating user answers in the "Name Place Animal Thing" game.
- *
- * - validateAnswers - A function that handles the AI-powered validation process.
- * - ValidateAnswersInput - The input type for the validateAnswers function.
- * - ValidateAnswersOutput - The return type for the validateAnswers function.
  */
 
 import {ai} from '@/ai/genkit';
@@ -13,10 +10,10 @@ import {z} from 'genkit';
 // Input Schema
 const ValidateAnswersInputSchema = z.object({
   targetLetter: z.string().length(1).describe('The target letter for the round.'),
-  name: z.string().describe('The submitted word for the "Name" category.'),
-  place: z.string().describe('The submitted word for the "Place" category.'),
-  animal: z.string().describe('The submitted word for the "Animal" category.'),
-  thing: z.string().describe('The submitted word for the "Thing" category.'),
+  name: z.string().optional().describe('The submitted word for the "Name" category.'),
+  place: z.string().optional().describe('The submitted word for the "Place" category.'),
+  animal: z.string().optional().describe('The submitted word for the "Animal" category.'),
+  thing: z.string().optional().describe('The submitted word for the "Thing" category.'),
 });
 export type ValidateAnswersInput = z.infer<typeof ValidateAnswersInputSchema>;
 
@@ -56,9 +53,8 @@ Animal: "{{{animal}}}"
 Thing: "{{{thing}}}"
 
 Analyze each submission and provide a JSON object with validation results for each category.
-The output MUST strictly follow the provided JSON schema (nameValidation, placeValidation, animalValidation, thingValidation).
-Ensure to provide a clear 'reason' for why a word is valid or invalid.
-If a word is empty, it should be considered invalid with a reason like "Empty submission."
+If a word is empty, null, or undefined, it should be considered invalid with the reason "Empty submission."
+The output MUST strictly follow the provided JSON schema.
 `
 });
 

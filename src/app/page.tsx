@@ -1,7 +1,7 @@
 
 "use client"
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -66,28 +66,16 @@ export default function Home() {
   const sessionPlayersRef = useMemoFirebase(() => roomCode ? collection(db, 'game_sessions', roomCode, 'players') : null, [db, roomCode]);
   const { data: sessionPlayers } = useCollection<Player>(sessionPlayersRef);
 
-  // Submissions listener - for validation phase
+  // Submissions listener
   const submissionsRef = useMemoFirebase(() => {
-    if (!roomCode || !gameSession || !user || !gameSession.members?.[user.uid]) return null;
+    if (!roomCode || !gameSession || !user) return null;
     return query(
       collection(db, 'game_sessions', roomCode, 'submissions'),
       where('roundCount', '==', gameSession.roundCount)
     );
-  }, [db, roomCode, gameSession?.roundCount, user, gameSession?.members]);
+  }, [db, roomCode, gameSession?.roundCount, user]);
   
   const { data: submissions } = useCollection<Submission>(submissionsRef);
-
-  // Sync session scores to global profile
-  useEffect(() => {
-    if (gameSession?.status === 'ROUND_RESULT' && user && sessionPlayers) {
-      const meInSession = sessionPlayers.find(p => p.id === user.uid);
-      if (meInSession && profile && (meInSession.score !== profile.score)) {
-        updateDocumentNonBlocking(doc(db, 'player_profiles', user.uid), {
-          score: meInSession.score
-        });
-      }
-    }
-  }, [gameSession?.status, sessionPlayers, user, profile, db]);
 
   // Handle Game State transitions
   useEffect(() => {
@@ -96,7 +84,6 @@ export default function Home() {
         const oldStatus = status;
         setStatus(gameSession.status);
         
-        // Auto-submit if the round ended
         if (oldStatus === 'PLAYING' && (gameSession.status === 'VALIDATING' || gameSession.status === 'MANUAL_VALIDATION')) {
           submitLocalAnswers();
           if (gameSession.status === 'VALIDATING' && gameSession.hostPlayerId === user.uid) {
@@ -109,15 +96,16 @@ export default function Home() {
 
   const submitLocalAnswers = useCallback(() => {
     if (!user || !roomCode || !gameSession) return;
-    
     const subRef = doc(db, 'game_sessions', roomCode, 'submissions', user.uid);
     setDocumentNonBlocking(subRef, {
       id: user.uid,
       playerId: user.uid,
+      nickname: nickname || profile?.nickname || 'Unknown',
+      avatar: avatar || profile?.avatar || '👤',
       answers: localAnswers,
       roundCount: gameSession.roundCount
     }, { merge: true });
-  }, [user, roomCode, gameSession, localAnswers, db]);
+  }, [user, roomCode, gameSession, localAnswers, nickname, avatar, profile, db]);
 
   const handleSignIn = () => {
     initiateAnonymousSignIn(auth);
@@ -140,13 +128,11 @@ export default function Home() {
       toast({ title: "Invalid Code", description: "Please enter a 4-digit code." });
       return;
     }
-    
     const sessionDoc = await getDoc(doc(db, 'game_sessions', inputCode));
     if (!sessionDoc.exists()) {
       toast({ title: "Room Not Found", description: "This room code doesn't exist.", variant: "destructive" });
       return;
     }
-
     setRoomCode(inputCode);
     setStatus('PROFILE');
   };
@@ -156,7 +142,6 @@ export default function Home() {
       toast({ title: "Nickname required", description: "Who are you?" });
       return;
     }
-
     if (!user) return;
 
     const pData: Player = {
@@ -174,7 +159,6 @@ export default function Home() {
     if (mode === 'HOST' || mode === 'SINGLE') {
       const code = mode === 'SINGLE' ? `SOLO-${user.uid.substring(0, 4)}` : Math.floor(1000 + Math.random() * 9000).toString();
       setRoomCode(code);
-      
       const initialSession: GameState = {
         status: 'LOBBY',
         currentLetter: '',
@@ -185,32 +169,20 @@ export default function Home() {
         hostPlayerId: user.uid,
         members: { [user.uid]: true }
       };
-      
       setDocumentNonBlocking(doc(db, 'game_sessions', code), initialSession, { merge: true });
       setDocumentNonBlocking(doc(db, 'game_sessions', code, 'players', user.uid), pData, { merge: true });
       setStatus('LOBBY');
     } else if (mode === 'GUEST') {
       const sessionRef = doc(db, 'game_sessions', roomCode);
-      const sessionDoc = await getDoc(sessionRef);
-      
-      if (sessionDoc.exists()) {
-        const sessionData = sessionDoc.data() as GameState;
-        const updatedMembers = { ...(sessionData.members || {}), [user.uid]: true };
-        
-        updateDocumentNonBlocking(sessionRef, { members: updatedMembers });
-        setDocumentNonBlocking(doc(db, 'game_sessions', roomCode, 'players', user.uid), pData, { merge: true });
-        setStatus('LOBBY');
-      } else {
-        toast({ title: "Room disappeared", description: "This room is no longer active.", variant: "destructive" });
-        setStatus('MENU');
-      }
+      updateDocumentNonBlocking(sessionRef, { [`members.${user.uid}`]: true });
+      setDocumentNonBlocking(doc(db, 'game_sessions', roomCode, 'players', user.uid), pData, { merge: true });
+      setStatus('LOBBY');
     }
   };
 
   const initiateRound = () => {
     const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
     const letter = letters[Math.floor(Math.random() * letters.length)];
-    
     if (gameSessionRef) {
       updateDocumentNonBlocking(gameSessionRef, {
         currentLetter: letter,
@@ -256,7 +228,6 @@ export default function Home() {
   const handleStop = () => {
     if (!user || !roomCode || !gameSession) return;
     submitLocalAnswers();
-
     if (gameSessionRef) {
       const nextStatus = gameSession.validationMode === 'AI' ? 'VALIDATING' : 'MANUAL_VALIDATION';
       updateDocumentNonBlocking(gameSessionRef, { status: nextStatus });
@@ -273,67 +244,63 @@ export default function Home() {
 
   const runAIValidation = async () => {
     if (!gameSession || !user || gameSession.hostPlayerId !== user.uid || !sessionPlayers) return;
-    
     const letter = gameSession.currentLetter;
     
-    setTimeout(async () => {
-      const allSubmissions = submissions || [];
-      
-      await Promise.all(sessionPlayers.map(async (p) => {
-        const sub = allSubmissions.find(s => s.playerId === p.id);
-        let roundScore = 0;
-
-        if (sub) {
-          try {
-            const result = await validateAnswers({
-              targetLetter: letter,
-              name: sub.answers.name,
-              place: sub.answers.place,
-              animal: sub.answers.animal,
-              thing: sub.answers.thing
-            });
-
-            CATEGORIES.forEach(cat => {
-              const valKey = `${cat.toLowerCase()}Validation` as keyof typeof result;
-              const val = (result as any)[valKey];
-              if (val?.isValid) roundScore += 10;
-            });
-          } catch (e) {
-            roundScore = 0;
-          }
-        }
-
-        updateDocumentNonBlocking(doc(db, 'game_sessions', roomCode, 'players', p.id), {
-          score: (p.score || 0) + roundScore,
-          lastRoundScore: roundScore
-        });
-      }));
-
-      if (gameSessionRef) {
-        updateDocumentNonBlocking(gameSessionRef, { status: 'ROUND_RESULT' });
-      }
-    }, 2000);
-  };
-
-  const finalizeManualValidation = () => {
-    if (!gameSession || !sessionPlayers) return;
-
-    sessionPlayers.forEach(p => {
+    // Small delay to let all submissions settle in Firestore
+    await new Promise(r => setTimeout(r, 2000));
+    
+    const allSubmissions = submissions || [];
+    
+    await Promise.all(sessionPlayers.map(async (p) => {
+      const sub = allSubmissions.find(s => s.playerId === p.id);
       let roundScore = 0;
-      const playerVals = hostValidation[p.id] || {};
-      
-      CATEGORIES.forEach(cat => {
-        const valStatus = playerVals[cat.toLowerCase()];
-        if (valStatus === 'correct') roundScore += 10;
-        if (valStatus === 'duplicate') roundScore += 5;
-      });
+
+      if (sub) {
+        try {
+          const result = await validateAnswers({
+            targetLetter: letter,
+            name: sub.answers.name || '',
+            place: sub.answers.place || '',
+            animal: sub.answers.animal || '',
+            thing: sub.answers.thing || ''
+          });
+
+          CATEGORIES.forEach(cat => {
+            const valKey = `${cat.toLowerCase()}Validation` as keyof typeof result;
+            const val = (result as any)[valKey];
+            if (val?.isValid) roundScore += 10;
+          });
+        } catch (e) {
+          console.error("AI Validation Error:", e);
+        }
+      }
 
       updateDocumentNonBlocking(doc(db, 'game_sessions', roomCode, 'players', p.id), {
         score: (p.score || 0) + roundScore,
         lastRoundScore: roundScore
       });
-    });
+    }));
 
+    if (gameSessionRef) {
+      updateDocumentNonBlocking(gameSessionRef, { status: 'ROUND_RESULT' });
+    }
+  };
+
+  const finalizeManualValidation = () => {
+    if (!gameSession || !sessionPlayers) return;
+    sessionPlayers.forEach(p => {
+      let roundScore = 0;
+      const playerVals = hostValidation[p.id] || {};
+      CATEGORIES.forEach(cat => {
+        const valStatus = playerVals[cat.toLowerCase()];
+        if (valStatus === 'correct') roundScore += 10;
+        if (valStatus === 'duplicate') roundScore += 5;
+      });
+      updateDocumentNonBlocking(doc(db, 'game_sessions', roomCode, 'players', p.id), {
+        score: (p.score || 0) + roundScore,
+        lastRoundScore: roundScore
+      });
+    });
     if (gameSessionRef) {
       updateDocumentNonBlocking(gameSessionRef, { status: 'ROUND_RESULT' });
     }
@@ -341,7 +308,7 @@ export default function Home() {
 
   if (isUserLoading) return <div className="min-h-screen flex items-center justify-center">Loading LetterLink...</div>;
 
-  const sortedPlayers = sessionPlayers ? [...sessionPlayers].sort((a, b) => b.score - a.score) : [];
+  const sortedPlayers = sessionPlayers ? [...sessionPlayers].sort((a, b) => (b.score || 0) - (a.score || 0)) : [];
 
   return (
     <div className="min-h-screen p-4 flex flex-col items-center justify-center font-body text-foreground">
@@ -386,7 +353,6 @@ export default function Home() {
                 <Button variant="ghost" className="w-full h-12" onClick={() => setIsMultiplayerMenu(false)}>Back to Main Menu</Button>
               </div>
             )}
-            
             {profile && (
               <div className="pt-4 border-t flex items-center justify-between">
                 <div className="flex items-center gap-2">
@@ -446,7 +412,6 @@ export default function Home() {
               value={nickname}
               onChange={(e) => setNickname(e.target.value)}
             />
-            
             <Button className="w-full h-14 text-xl font-bold bg-accent hover:bg-accent/90 rounded-2xl" onClick={finalizeProfile}>
               Enter Game <ArrowRight className="ml-2 w-6 h-6" />
             </Button>
@@ -467,7 +432,7 @@ export default function Home() {
           </CardHeader>
           <CardContent className="space-y-6">
             <div className="space-y-3">
-              <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest">Players Joined</p>
+              <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest">Players Joined ({sessionPlayers?.length || 0})</p>
               {sessionPlayers?.map(p => (
                 <div key={p.id} className="flex items-center gap-3 p-4 bg-muted/50 rounded-2xl border-l-4 border-primary shadow-sm">
                   <span className="text-3xl">{p.avatar}</span>
@@ -548,7 +513,7 @@ export default function Home() {
                 <Input 
                   placeholder={`Type a ${cat}...`}
                   className="h-16 text-2xl font-bold px-6 rounded-2xl shadow-md border-2 group-focus-within:border-accent transition-all bg-card"
-                  value={localAnswers[cat.toLowerCase() as keyof RoundAnswers]}
+                  value={localAnswers[cat.toLowerCase() as keyof RoundAnswers] || ''}
                   onChange={(e) => setLocalAnswers({...localAnswers, [cat.toLowerCase()]: e.target.value})}
                 />
               </div>
@@ -649,7 +614,6 @@ export default function Home() {
                     <CarouselNext className="relative translate-y-0" />
                   </div>
                 </Carousel>
-                
                 <Button className="w-full h-16 bg-primary rounded-2xl font-black text-xl shadow-lg mt-6" onClick={finalizeManualValidation}>
                   Finalize Scores
                 </Button>
@@ -693,7 +657,7 @@ export default function Home() {
                         </div>
                       </div>
                       <div className="text-right">
-                        <p className="text-3xl font-black text-primary">{p.score} pts</p>
+                        <p className="text-3xl font-black text-primary">{p.score || 0} pts</p>
                         <p className="text-xs font-black uppercase text-accent tracking-tighter">Total Score</p>
                       </div>
                     </div>
@@ -701,7 +665,6 @@ export default function Home() {
                </div>
             </CardContent>
           </Card>
-
           {gameSession?.hostPlayerId === user?.uid ? (
             <Button className="w-full h-16 text-2xl font-black bg-primary rounded-3xl shadow-xl border-b-8 border-black/10 active:border-b-0 active:translate-y-1 transition-all" onClick={initiateRound}>
               Start Next Round <Play className="ml-2 w-8 h-8" />
