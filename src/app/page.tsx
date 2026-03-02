@@ -8,10 +8,10 @@ import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
 import { Users, User, Play, LogIn, Trophy, Timer as TimerIcon, Hash, CheckCircle2, XCircle, ArrowRight, Settings, LogOut, ShieldCheck, ShieldAlert } from 'lucide-react';
-import { GameStatus, Player, GameMode, GameState, RoundAnswers, ValidationResults } from '@/lib/game-types';
+import { GameStatus, Player, GameMode, GameState, RoundAnswers } from '@/lib/game-types';
 import { validateAnswers } from '@/ai/flows/ai-answer-validation-flow';
 import { useUser, useFirestore, useDoc, useMemoFirebase, setDocumentNonBlocking, updateDocumentNonBlocking, initiateAnonymousSignIn } from '@/firebase';
-import { doc, collection, query, where, serverTimestamp } from 'firebase/firestore';
+import { doc } from 'firebase/firestore';
 import { signOut } from 'firebase/auth';
 import { useAuth } from '@/firebase';
 
@@ -46,17 +46,18 @@ export default function Home() {
   });
 
   // Firestore Data Hooks
+  // CRITICAL: Guard these hooks with user presence to avoid permission errors before auth
   const playerProfileRef = useMemoFirebase(() => user ? doc(db, 'player_profiles', user.uid) : null, [db, user]);
   const { data: profile } = useDoc<Player>(playerProfileRef);
 
-  const gameSessionRef = useMemoFirebase(() => roomCode ? doc(db, 'game_sessions', roomCode) : null, [db, roomCode]);
+  const gameSessionRef = useMemoFirebase(() => (user && roomCode) ? doc(db, 'game_sessions', roomCode) : null, [db, user, roomCode]);
   const { data: gameSession } = useDoc<GameState>(gameSessionRef);
 
   // Sync profile locally if it exists
   useEffect(() => {
     if (profile) {
-      setNickname(profile.nickname);
-      setAvatar(profile.avatar);
+      setNickname(profile.nickname || '');
+      setAvatar(profile.avatar || AVATARS[0]);
     }
   }, [profile]);
 
@@ -64,10 +65,10 @@ export default function Home() {
   useEffect(() => {
     if (gameSession) {
       if (status !== 'MENU' && status !== 'PROFILE') {
-        // Sync local game state status if not host (host controls transitions)
-        if (mode === 'GUEST') {
+        // Sync local game state status if guest or if state progressed
+        if (mode === 'GUEST' || (gameSession.status !== status)) {
           setStatus(gameSession.status);
-          if (gameSession.status === 'PLAYING' && status !== 'PLAYING') {
+          if (gameSession.status === 'PLAYING') {
              setGameTimer(60);
           }
         }
@@ -116,7 +117,7 @@ export default function Home() {
           currentLetter: '',
           timer: 60,
           roomCode: code,
-          roundCount: 1,
+          roundCount: 0,
           validationMode: validationMode,
           hostPlayerId: user.uid,
           members: { [user.uid]: true }
@@ -162,7 +163,7 @@ export default function Home() {
         const t = setTimeout(() => setCountdown(countdown - 1), 1000);
         return () => clearTimeout(t);
       } else {
-        if (mode !== 'GUEST' && gameSessionRef) {
+        if ((mode === 'SINGLE' || mode === 'HOST') && gameSessionRef) {
           updateDocumentNonBlocking(gameSessionRef, { status: 'PLAYING' });
         }
         setStatus('PLAYING');
@@ -184,14 +185,18 @@ export default function Home() {
   }, [status, gameTimer]);
 
   const handleStop = async () => {
-    const nextStatus = gameSession?.validationMode === 'AI' ? 'VALIDATING' : 'MANUAL_VALIDATION';
-    setStatus(nextStatus);
-    if (mode !== 'GUEST' && gameSessionRef) {
-      updateDocumentNonBlocking(gameSessionRef, { status: nextStatus });
-    }
+    // Determine the next status based on the mode set in the session
+    const activeValidationMode = gameSession?.validationMode || validationMode;
+    const nextStatus = activeValidationMode === 'AI' ? 'VALIDATING' : 'MANUAL_VALIDATION';
     
-    if (gameSession?.validationMode === 'AI' && (mode === 'SINGLE' || mode === 'HOST')) {
+    setStatus(nextStatus);
+    
+    if ((mode === 'SINGLE' || mode === 'HOST') && gameSessionRef) {
+      updateDocumentNonBlocking(gameSessionRef, { status: nextStatus });
+      
+      if (activeValidationMode === 'AI') {
         runAIValidation();
+      }
     }
   };
 
@@ -235,7 +240,8 @@ export default function Home() {
       let roundScore = 0;
       const cats: (keyof RoundAnswers)[] = ['name', 'place', 'animal', 'thing'];
       cats.forEach(cat => {
-        const val = result[`${cat}Validation` as keyof typeof result] as any;
+        const valKey = `${cat}Validation` as keyof typeof result;
+        const val = result[valKey] as any;
         if (val?.isValid) roundScore += 10;
       });
 
@@ -421,11 +427,11 @@ export default function Home() {
           <div className="flex justify-between items-center bg-card/50 backdrop-blur-sm p-4 rounded-3xl border-2 border-primary/10 shadow-xl">
             <div className="flex items-center gap-4">
               <div className="w-20 h-20 bg-accent text-white flex items-center justify-center text-5xl font-bold rounded-2xl shadow-lg">
-                {gameSession?.currentLetter || 'A'}
+                {gameSession?.currentLetter || '—'}
               </div>
               <div>
                 <h3 className="text-2xl font-bold">Round {gameSession?.roundCount || 1}</h3>
-                <p className="text-muted-foreground">Starting with "{gameSession?.currentLetter || 'A'}"</p>
+                <p className="text-muted-foreground">Starting with "{gameSession?.currentLetter || '—'}"</p>
               </div>
             </div>
             <div className={`flex items-center gap-2 text-3xl font-bold ${gameTimer < 10 ? 'text-destructive animate-pulse' : 'text-primary'}`}>
@@ -535,7 +541,8 @@ export default function Home() {
 
                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {['name', 'place', 'animal', 'thing'].map(cat => {
-                    const isValid = gameSession?.validationMode === 'AI' ? true : manualValidation[cat]; // AI logic is simplified for result view
+                    // In result view, consider valid if it was Manual validated OK OR if AI check was bypassed/passed
+                    const isValid = gameSession?.validationMode === 'AI' ? true : manualValidation[cat]; 
                     return (
                       <div key={cat} className="p-4 rounded-2xl bg-muted/30 border-2 border-primary/5 flex items-center justify-between">
                          <div>
@@ -564,7 +571,10 @@ export default function Home() {
               Next Round <Play className="ml-2 w-6 h-6" />
             </Button>
           )}
-          <Button variant="outline" className="w-full h-12" onClick={() => setStatus('MENU')}>Main Menu</Button>
+          <Button variant="outline" className="w-full h-12" onClick={() => {
+            setRoomCode('');
+            setStatus('MENU');
+          }}>Main Menu</Button>
         </div>
       )}
     </div>
