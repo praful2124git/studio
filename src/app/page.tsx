@@ -1,7 +1,7 @@
 
 "use client"
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -73,53 +73,7 @@ export default function Home() {
   
   const { data: submissions } = useCollection<Submission>(submissionsRef);
 
-  // Initial load of profile info if it exists
-  useEffect(() => {
-    if (profile && !nickname) {
-      setNickname(profile.nickname || '');
-      setAvatar(profile.avatar || AVATARS[0]);
-    }
-  }, [profile]);
-
-  const submitLocalAnswers = useCallback(() => {
-    if (!user || !roomCode || !gameSession) return;
-    
-    const subRef = doc(db, 'game_sessions', roomCode, 'submissions', user.uid);
-    setDocumentNonBlocking(subRef, {
-      id: user.uid,
-      playerId: user.uid,
-      nickname: nickname,
-      avatar: avatar,
-      answers: localAnswers,
-      roundCount: gameSession.roundCount,
-      hostPlayerId: gameSession.hostPlayerId
-    }, { merge: true });
-  }, [user, roomCode, gameSession, nickname, avatar, localAnswers, db]);
-
-  // Handle game state transitions and remote triggers
-  useEffect(() => {
-    if (gameSession && user) {
-      if (gameSession.status !== status) {
-        const oldStatus = status;
-        setStatus(gameSession.status);
-        
-        // Auto-submit if the round ended by anyone
-        if (oldStatus === 'PLAYING' && (gameSession.status === 'VALIDATING' || gameSession.status === 'MANUAL_VALIDATION')) {
-          submitLocalAnswers();
-        }
-
-        if (gameSession.status === 'VALIDATING') {
-          runAIValidation();
-        }
-        
-        if (gameSession.status === 'PLAYING') {
-          setGameTimer(60);
-        }
-      }
-    }
-  }, [gameSession, status, user, submitLocalAnswers]);
-
-  // Sync session scores to global profile
+  // Sync session scores to global profile locally
   useEffect(() => {
     if (gameSession?.status === 'ROUND_RESULT' && user && gameSession.players) {
       const meInSession = gameSession.players.find(p => p.id === user.uid);
@@ -132,13 +86,39 @@ export default function Home() {
     }
   }, [gameSession?.status, gameSession?.players, user, profile, db]);
 
+  // Handle Game State transitions
   useEffect(() => {
-    if (gameSession?.status === 'COUNTDOWN') {
-      setLocalAnswers({ name: '', place: '', animal: '', thing: '' });
-      setHostValidation({});
-      setGameTimer(60);
+    if (gameSession && user) {
+      if (gameSession.status !== status) {
+        const oldStatus = status;
+        setStatus(gameSession.status);
+        
+        // Auto-submit if the round ended
+        if (oldStatus === 'PLAYING' && (gameSession.status === 'VALIDATING' || gameSession.status === 'MANUAL_VALIDATION')) {
+          submitLocalAnswers();
+          if (gameSession.status === 'VALIDATING' && gameSession.hostPlayerId === user.uid) {
+            runAIValidation();
+          }
+        }
+      }
     }
-  }, [gameSession?.status]);
+  }, [gameSession?.status, user, gameSession?.hostPlayerId]);
+
+  const submitLocalAnswers = useCallback(() => {
+    if (!user || !roomCode || !gameSession) return;
+    
+    const subRef = doc(db, 'game_sessions', roomCode, 'submissions', user.uid);
+    setDocumentNonBlocking(subRef, {
+      id: user.uid,
+      playerId: user.uid,
+      nickname: nickname,
+      avatar: avatar,
+      answers: localAnswers,
+      roundCount: gameSession.roundCount,
+      hostPlayerId: gameSession.hostPlayerId,
+      members: gameSession.members
+    }, { merge: true });
+  }, [user, roomCode, gameSession, nickname, avatar, localAnswers, db]);
 
   const handleSignIn = () => {
     initiateAnonymousSignIn(auth);
@@ -162,7 +142,6 @@ export default function Home() {
       return;
     }
     
-    // Check if session exists
     const sessionDoc = await getDoc(doc(db, 'game_sessions', inputCode));
     if (!sessionDoc.exists()) {
       toast({ title: "Room Not Found", description: "This room code doesn't exist.", variant: "destructive" });
@@ -189,7 +168,6 @@ export default function Home() {
       score: profile?.score || 0,
     };
     
-    // Update global profile
     setDocumentNonBlocking(doc(db, 'player_profiles', user.uid), pData, { merge: true });
 
     if (mode === 'HOST' || mode === 'SINGLE') {
@@ -211,7 +189,6 @@ export default function Home() {
       setDocumentNonBlocking(doc(db, 'game_sessions', code), initialSession, { merge: true });
       setStatus('LOBBY');
     } else if (mode === 'GUEST') {
-      // Join existing session in lobby
       const sessionRef = doc(db, 'game_sessions', roomCode);
       const sessionDoc = await getDoc(sessionRef);
       
@@ -220,7 +197,10 @@ export default function Home() {
         const updatedMembers = { ...(sessionData.members || {}), [user.uid]: true };
         const updatedPlayers = [...(sessionData.players || [])];
         
-        if (!updatedPlayers.find(p => p.id === user.uid)) {
+        const existingIdx = updatedPlayers.findIndex(p => p.id === user.uid);
+        if (existingIdx > -1) {
+          updatedPlayers[existingIdx] = pData;
+        } else {
           updatedPlayers.push(pData);
         }
 
@@ -252,14 +232,6 @@ export default function Home() {
     setStatus('COUNTDOWN');
   };
 
-  const toggleValidationMode = () => {
-    const nextMode = (gameSession?.validationMode || validationMode) === 'AI' ? 'HUMAN' : 'AI';
-    setValidationMode(nextMode);
-    if (gameSessionRef) {
-      updateDocumentNonBlocking(gameSessionRef, { validationMode: nextMode });
-    }
-  };
-
   const [countdown, setCountdown] = useState(3);
   useEffect(() => {
     if (status === 'COUNTDOWN') {
@@ -267,14 +239,16 @@ export default function Home() {
         const t = setTimeout(() => setCountdown(countdown - 1), 1000);
         return () => clearTimeout(t);
       } else {
-        if ((mode === 'SINGLE' || mode === 'HOST') && gameSessionRef) {
+        if (gameSession?.hostPlayerId === user?.uid && gameSessionRef) {
           updateDocumentNonBlocking(gameSessionRef, { status: 'PLAYING' });
         }
+        setLocalAnswers({ name: '', place: '', animal: '', thing: '' });
+        setHostValidation({});
+        setGameTimer(60);
         setStatus('PLAYING');
-        setCountdown(3);
       }
     }
-  }, [status, countdown, mode, gameSessionRef]);
+  }, [status, countdown, user?.uid, gameSession?.hostPlayerId, gameSessionRef]);
 
   const [gameTimer, setGameTimer] = useState(60);
   useEffect(() => {
@@ -292,12 +266,65 @@ export default function Home() {
     if (!user || !roomCode || !gameSession) return;
     submitLocalAnswers();
 
-    const activeValidationMode = gameSession?.validationMode || validationMode;
-    const nextStatus = activeValidationMode === 'AI' ? 'VALIDATING' : 'MANUAL_VALIDATION';
-    
     if (gameSessionRef) {
+      const nextStatus = gameSession.validationMode === 'AI' ? 'VALIDATING' : 'MANUAL_VALIDATION';
       updateDocumentNonBlocking(gameSessionRef, { status: nextStatus });
     }
+  };
+
+  const toggleValidationMode = () => {
+    const nextMode = (gameSession?.validationMode || validationMode) === 'AI' ? 'HUMAN' : 'AI';
+    setValidationMode(nextMode);
+    if (gameSessionRef) {
+      updateDocumentNonBlocking(gameSessionRef, { validationMode: nextMode });
+    }
+  };
+
+  const runAIValidation = async () => {
+    if (!gameSession || !user || gameSession.hostPlayerId !== user.uid) return;
+    
+    const letter = gameSession.currentLetter;
+    
+    // Wait a brief moment for all submissions to arrive in Firestore
+    setTimeout(async () => {
+      const allSubmissions = submissions || [];
+      const updatedPlayers = await Promise.all(gameSession.players.map(async (p) => {
+        const sub = allSubmissions.find(s => s.playerId === p.id);
+        if (!sub) return { ...p, lastRoundScore: 0 };
+
+        try {
+          const result = await validateAnswers({
+            targetLetter: letter,
+            name: sub.answers.name,
+            place: sub.answers.place,
+            animal: sub.answers.animal,
+            thing: sub.answers.thing
+          });
+
+          let roundScore = 0;
+          CATEGORIES.forEach(cat => {
+            const valKey = `${cat.toLowerCase()}Validation` as keyof typeof result;
+            const val = (result as any)[valKey];
+            if (val?.isValid) roundScore += 10;
+          });
+
+          return {
+            ...p,
+            score: (p.score || 0) + roundScore,
+            lastRoundScore: roundScore
+          };
+        } catch (e) {
+          return { ...p, lastRoundScore: 0 };
+        }
+      }));
+
+      if (gameSessionRef) {
+        updateDocumentNonBlocking(gameSessionRef, { 
+          status: 'ROUND_RESULT',
+          players: updatedPlayers
+        });
+      }
+    }, 2000);
   };
 
   const finalizeManualValidation = () => {
@@ -325,52 +352,6 @@ export default function Home() {
         status: 'ROUND_RESULT',
         players: updatedPlayers
       });
-    }
-  };
-
-  const runAIValidation = async () => {
-    if (!gameSession || !user) return;
-    
-    const letter = gameSession.currentLetter;
-    try {
-      const result = await validateAnswers({
-        targetLetter: letter,
-        name: localAnswers.name,
-        place: localAnswers.place,
-        animal: localAnswers.animal,
-        thing: localAnswers.thing
-      });
-
-      let roundScore = 0;
-      CATEGORIES.forEach(cat => {
-        const valKey = `${cat.toLowerCase()}Validation` as keyof typeof result;
-        const val = result[valKey] as any;
-        if (val?.isValid) roundScore += 10;
-      });
-
-      const updatedTotalScore = (profile?.score || 0) + roundScore;
-      
-      // We don't update profile here directly anymore to avoid permission errors if multiple people do it.
-      // Every player updates their OWN profile in a separate useEffect watching gameSession status.
-      
-      if (gameSessionRef && (mode === 'HOST' || mode === 'SINGLE')) {
-        setTimeout(() => {
-          // Note: In real production we'd collect all scores, for MVP host's AI results finalize the session
-          const latestPlayers = gameSession.players.map(p => {
-            if (p.id === user.uid) return { ...p, score: updatedTotalScore, lastRoundScore: roundScore };
-            return p;
-          });
-          updateDocumentNonBlocking(gameSessionRef, { 
-            status: 'ROUND_RESULT',
-            players: latestPlayers
-          });
-        }, 3000);
-      }
-    } catch (e) {
-      toast({ title: "Validation Error", description: "AI judge failed. Using manual fallback.", variant: "destructive" });
-      if (gameSessionRef && (mode === 'HOST' || mode === 'SINGLE')) {
-        updateDocumentNonBlocking(gameSessionRef, { status: 'MANUAL_VALIDATION' });
-      }
     }
   };
 
@@ -522,13 +503,13 @@ export default function Home() {
                     <Button 
                       size="sm" 
                       variant={(gameSession?.validationMode || validationMode) === 'AI' ? 'default' : 'outline'} 
-                      onClick={() => toggleValidationMode()}
+                      onClick={toggleValidationMode}
                       className="rounded-full px-4"
                     >AI</Button>
                     <Button 
                       size="sm" 
                       variant={(gameSession?.validationMode || validationMode) === 'HUMAN' ? 'default' : 'outline'} 
-                      onClick={() => toggleValidationMode()}
+                      onClick={toggleValidationMode}
                       className="rounded-full px-4"
                     >Manual</Button>
                  </div>
